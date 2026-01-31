@@ -1,0 +1,10 @@
+# Goal
+string bin_id
+---
+# Result
+bool success
+string message
+float32 total_duration_secs
+---
+# Feedback
+bin_collection_msgs/MissionStatus status

@@ -1,0 +1,12 @@
+# Goal
+float32 timeout_secs
+---
+# Result
+bool success
+bool bin_attached
+string message
+---
+# Feedback
+string phase
+bin_collection_msgs/AlignmentStatus alignment
+bin_collection_msgs/HookStatus hook

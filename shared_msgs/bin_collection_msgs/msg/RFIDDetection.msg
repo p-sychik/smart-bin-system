@@ -1,0 +1,3 @@
+string tag_id
+float32 signal_strength
+builtin_interfaces/Time timestamp

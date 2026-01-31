@@ -1,0 +1,6 @@
+string path_id
+uint32 current_waypoint
+uint32 total_waypoints
+float32 progress_percent
+float32 distance_remaining
+string state

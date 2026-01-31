@@ -1,0 +1,5 @@
+string bin_id
+---
+bool accepted
+string mission_id
+string message

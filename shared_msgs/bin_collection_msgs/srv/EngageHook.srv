@@ -1,0 +1,4 @@
+---
+bool success
+string message
+bin_collection_msgs/HookStatus status

@@ -1,0 +1,17 @@
+build/
+install/
+log/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+node_modules/
+dist/
+*.db
+*.sqlite
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

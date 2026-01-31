@@ -1,0 +1,4 @@
+string rfid_tag_id
+---
+bool found
+bin_collection_msgs/BinInfo bin
