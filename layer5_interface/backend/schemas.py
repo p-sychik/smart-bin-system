@@ -57,3 +57,40 @@ class BinResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        
+        
+# Schedule Schemas
+class ScheduleCreate(BaseModel):
+    """Schema for creating a schedule"""
+    bin_id: str = Field(..., description="Bin ID to collect")
+    schedule_time: str = Field(..., description="Time in HH:MM format or cron")
+    frequency: str = Field(..., description="daily, weekly, or custom")
+    description: Optional[str] = None
+    enabled: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    """Schema for updating schedule"""
+    bin_id: Optional[str] = None
+    schedule_time: Optional[str] = None
+    frequency: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class ScheduleResponse(BaseModel):
+    """Schema for schedule response"""
+    id: int
+    schedule_id: str
+    bin_id: str
+    schedule_time: str
+    frequency: str
+    enabled: bool
+    last_triggered: Optional[datetime]
+    next_trigger: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+    description: Optional[str]
+
+    class Config:
+        from_attributes = True

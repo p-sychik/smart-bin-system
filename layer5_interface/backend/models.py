@@ -27,3 +27,20 @@ class Bin(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     is_active = Column(Boolean, default=True)
+    
+    
+class Schedule(Base):
+    """Collection schedule model"""
+    __tablename__ = "schedules"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    schedule_id = Column(String, unique=True, index=True, nullable=False)
+    bin_id = Column(String, nullable=False)  # References Bin.bin_id
+    schedule_time = Column(String, nullable=False)  # Cron format or time string
+    frequency = Column(String, nullable=False)  # "daily", "weekly", "custom"
+    enabled = Column(Boolean, default=True)
+    last_triggered = Column(DateTime, nullable=True)
+    next_trigger = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    description = Column(String, nullable=True)
