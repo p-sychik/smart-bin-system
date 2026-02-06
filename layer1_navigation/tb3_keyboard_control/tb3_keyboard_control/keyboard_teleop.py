@@ -6,6 +6,7 @@ from geometry_msgs.msg import TwistStamped
 import sys
 import termios
 import tty
+import time
 
 
 def get_key():
@@ -24,7 +25,6 @@ class KeyboardTeleop(Node):
     def __init__(self):
         super().__init__('keyboard_teleop_twiststamped')
 
-        # Publisher using TwistStamped
         self.publisher_ = self.create_publisher(
             TwistStamped,
             '/cmd_vel',
@@ -34,31 +34,60 @@ class KeyboardTeleop(Node):
         self.linear_speed = 0.2
         self.angular_speed = 0.5
 
+        # Recording state
+        self.recording = False
+        self.recorded_path = []   # list of (dt, lin_x, ang_z)
+        self.last_record_time = None
+
         self.get_logger().info(
-            '\nKeyboard Teleop (TwistStamped)\n'
-            '-----------------------------\n'
-            'W: forward\n'
-            'S: backward\n'
-            'A: turn left\n'
-            'D: turn right\n'
+            '\nKeyboard Teleop with Path Record & Replay\n'
+            '-----------------------------------------\n'
+            'W: forward | S: backward\n'
+            'A: left    | D: right\n'
             'X: stop\n'
+            'O: start recording\n'
+            'P: stop recording\n'
+            'SPACE: replay path\n'
             'Q: quit\n'
         )
 
-    def publish_cmd(self, lin_x, ang_z):
+    def publish_cmd(self, lin_x, ang_z, record=True):
         msg = TwistStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        now = self.get_clock().now()
+
+        msg.header.stamp = now.to_msg()
         msg.header.frame_id = 'base_link'
-
         msg.twist.linear.x = lin_x
-        msg.twist.linear.y = 0.0
-        msg.twist.linear.z = 0.0
-
-        msg.twist.angular.x = 0.0
-        msg.twist.angular.y = 0.0
         msg.twist.angular.z = ang_z
 
         self.publisher_.publish(msg)
+
+        # Record command with timing
+        if self.recording and record:
+            t = time.time()
+            if self.last_record_time is None:
+                dt = 0.0
+            else:
+                dt = t - self.last_record_time
+
+            self.recorded_path.append((dt, lin_x, ang_z))
+            self.last_record_time = t
+
+    def replay_path(self):
+        if not self.recorded_path:
+            self.get_logger().warn('No path recorded!')
+            return
+
+        self.get_logger().info('Replaying recorded path...')
+        self.publish_cmd(0.0, 0.0, record=False)
+        time.sleep(0.5)
+
+        for dt, lin_x, ang_z in self.recorded_path:
+            time.sleep(dt)
+            self.publish_cmd(lin_x, ang_z, record=False)
+
+        self.publish_cmd(0.0, 0.0, record=False)
+        self.get_logger().info('Replay finished')
 
     def run(self):
         while rclpy.ok():
@@ -74,14 +103,32 @@ class KeyboardTeleop(Node):
                 self.publish_cmd(0.0, -self.angular_speed)
             elif key == 'x':
                 self.publish_cmd(0.0, 0.0)
+
+            elif key == 'o':
+                self.recorded_path.clear()
+                self.recording = True
+                self.last_record_time = None
+                self.get_logger().info('Recording started')
+
+            elif key == 'p':
+                self.recording = False
+                self.last_record_time = None
+                self.get_logger().info(
+                    f'Recording stopped ({len(self.recorded_path)} commands)'
+                )
+
+            elif key == ' ':
+                self.recording = False
+                self.last_record_time = None
+                self.replay_path()
+
             elif key == 'q':
-                self.get_logger().info('Exiting keyboard teleop')
+                self.get_logger().info('Exiting')
                 break
+
             else:
-                # Stop on unknown key
                 self.publish_cmd(0.0, 0.0)
 
-        # Stop robot on exit
         self.publish_cmd(0.0, 0.0)
 
 
@@ -95,4 +142,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
