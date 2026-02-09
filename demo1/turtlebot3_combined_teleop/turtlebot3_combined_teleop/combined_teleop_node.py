@@ -177,8 +177,8 @@ class CombinedTeleopNode(Node):
             state_changed = True
             print('Servos centered')
         elif k == 'v':
-            self.servo_left = 0.5
-            self.servo_right = -0.5
+            self.servo_left = 0.7
+            self.servo_right = -0.7
             state_changed = True
             print('Servos V-position')
         elif k == 'o':
