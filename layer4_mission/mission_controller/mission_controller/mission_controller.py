@@ -57,6 +57,6 @@ class MissionController(Node):
             '/hook/disengage'
         )
 
-    def hook_status_callback(self, msg):
     # Update hook engagement status
+    def hook_status_callback(self, msg):
         self.hook_engaged = (msg.state == 'ENGAGED')
