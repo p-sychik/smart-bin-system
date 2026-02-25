@@ -4,6 +4,9 @@ import termios
 import time
 import tty
 
+from . import ArUco_search
+import cv2
+
 import rclpy
 from rclpy.clock import Clock
 from rclpy.node import Node
@@ -11,6 +14,8 @@ from rclpy.qos import QoSProfile
 
 from geometry_msgs.msg import TwistStamped
 from std_msgs.msg import Float32MultiArray
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
 
 USAGE_MSG = """
 Combined TurtleBot3 Teleop
@@ -21,6 +26,9 @@ Movement:
     A : Turn left (0.5 rad/s)
     D : Turn right (-0.5 rad/s)
     X : Stop movement
+
+ArUco Detection:
+    F : Find the marker
 
 Servos:
     C : Center both servos (0.0, 0.0)
@@ -80,6 +88,27 @@ class CombinedTeleopNode(Node):
         self.recorded_actions = []
         self.last_record_time = 0.0
 
+        # Camera setup via ROS2 topic
+        self.bridge = CvBridge()
+        self.latest_frame = None
+        self.camera_sub = self.create_subscription(
+            Image,
+            '/camera/image_raw',  # Change this to your actual camera topic
+            self.camera_callback,
+            10
+        )
+
+        self.searching = False
+
+        self.get_logger().info('Teleop node ready. Waiting for camera frames...')
+
+    def camera_callback(self, msg):
+        """Store latest camera frame."""
+        try:
+            self.latest_frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+        except Exception as e:
+            self.get_logger().warn(f'Failed to convert image: {e}')
+
     def publish_cmd_vel(self):
         msg = TwistStamped()
         msg.header.stamp = Clock().now().to_msg()
@@ -87,6 +116,79 @@ class CombinedTeleopNode(Node):
         msg.twist.linear.x = self.linear_x
         msg.twist.angular.z = self.angular_z
         self.cmd_vel_pub.publish(msg)
+
+    def spin_search(self):
+        spin_speed = 0.15
+        approach_speed = 0.05
+        max_spin_time = 15  # seconds
+
+        print("Starting ArUco search...")
+
+        # Wait for first camera frame
+        timeout = 10.0
+        start_wait = time.time()
+        while self.latest_frame is None:
+            if time.time() - start_wait > timeout:
+                print("ERROR: No camera frames received!")
+                self.searching = False
+                return False
+            print("Waiting for camera frame...")
+            rclpy.spin_once(self, timeout_sec=0.5)
+
+        print("Camera ready. Searching for marker...")
+        start_time = time.time()
+
+        while self.searching:
+            # Process ROS messages to get new camera frames
+            rclpy.spin_once(self, timeout_sec=0.01)
+
+            if self.latest_frame is None:
+                continue
+
+            frame = self.latest_frame
+            found, marker_id, distance, x_offset = ArUco_search.detect(frame)
+
+            if found:
+                print(f'Found marker {marker_id} at {distance:.2f}m, offset={x_offset:.2f}')
+
+                if ArUco_search.is_close_enough(distance):
+                    # Stop - ready to hook
+                    self.linear_x = 0.0
+                    self.angular_z = 0.0
+                    self.publish_cmd_vel()
+                    print('In position - ready to hook!')
+                    self.searching = False
+                    return True
+
+                # Adjust heading to center marker
+                if not ArUco_search.is_aligned(x_offset):
+                    # Not aligned - rotate to face marker
+                    self.linear_x = 0.0
+                    self.angular_z = -x_offset * 0.5  # P controller
+                else:
+                    # Aligned - move forward with small corrections
+                    self.linear_x = approach_speed
+                    self.angular_z = -x_offset * 0.3
+
+                self.publish_cmd_vel()
+
+            else:
+                # No marker found - keep spinning
+                if time.time() - start_time > max_spin_time:
+                    print('Timeout - marker not found')
+                    self.linear_x = 0.0
+                    self.angular_z = 0.0
+                    self.publish_cmd_vel()
+                    self.searching = False
+                    return False
+
+                self.linear_x = 0.0
+                self.angular_z = spin_speed
+                self.publish_cmd_vel()
+
+            time.sleep(0.05)
+
+        return False
 
     def publish_servo(self):
         msg = Float32MultiArray()
@@ -192,7 +294,6 @@ class CombinedTeleopNode(Node):
             for i, (dt, lin_x, ang_z, s_left, s_right) in enumerate(
                     self.recorded_actions):
                 print(f'  ({dt:.2f}, {lin_x:.1f}, {ang_z:.1f}, {s_left:.1f}, {s_right:.1f}),')
-
         elif k == 't':
             print('Loading test sequence...')
             self.recorded_actions = list(TEST_SEQUENCE)
@@ -203,6 +304,10 @@ class CombinedTeleopNode(Node):
             return True
         elif k == 'q' or key == '\x03':
             return False
+        elif k == 'f':
+            self.searching = True
+            print('Starting ArUco search...')
+            self.spin_search()
 
         if state_changed:
             if k in ('w', 's', 'a', 'd', 'x'):
