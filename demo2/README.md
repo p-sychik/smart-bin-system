@@ -26,6 +26,7 @@ Launch file:
 - TurtleBot3 bringup working (`turtlebot3_bringup`).
 - USB camera publishing image and camera info topics.
 - `cv_bridge` and OpenCV with `aruco` support available.
+- `python3-serial` installed on the robot if using direct Pico serial control.
 
 ## Build (workspace root)
 
@@ -39,6 +40,45 @@ source install/setup.bash
 ## Run
 
 Use separate terminals.
+
+### Quick runner script
+
+From workspace root:
+
+```bash
+./demo2/run_marker_seek.sh build
+./demo2/run_marker_seek.sh run
+```
+
+Useful controls in another terminal:
+
+```bash
+./demo2/run_marker_seek.sh start
+./demo2/run_marker_seek.sh stop
+./demo2/run_marker_seek.sh status
+```
+
+### Full end-to-end helper (robot + operator)
+
+This script SSHes to the robot (default `ubuntu@SNOVER`) to start bringup and
+camera in the background, then runs Demo 2 locally:
+
+```bash
+./demo2/run_demo2_full.sh up --build
+```
+
+Useful remote controls:
+
+```bash
+./demo2/run_demo2_full.sh remote-status
+./demo2/run_demo2_full.sh remote-down
+```
+
+Override robot host if needed:
+
+```bash
+REMOTE_HOST=snover ./demo2/run_demo2_full.sh up
+```
 
 ### 1) On TurtleBot (robot-side base + camera)
 
@@ -81,6 +121,34 @@ Stop behavior:
 ros2 service call /marker_seek/stop std_srvs/srv/Trigger "{}"
 ```
 
+## Hook + Pico port check
+
+Run these on the TurtleBot before launching marker seek:
+
+```bash
+ls -l /dev/ttyACM*
+```
+
+Expected setup is usually:
+- OpenCR on `/dev/ttyACM0` (base controller)
+- Pico on `/dev/ttyACM1` (hook servos)
+
+Quick Pico check:
+
+```bash
+python3 - <<'PY'
+import serial
+ser = serial.Serial('/dev/ttyACM1', 115200, timeout=1.0)
+ser.write(b'STATUS\n')
+print(ser.readline().decode('utf-8', 'ignore').strip())
+ser.close()
+PY
+```
+
+When marker seek reaches `SUCCEEDED`, it now auto-deploys the hook by:
+- publishing lock servo values on `servo_cmd`
+- sending `LOCK` to Pico serial (if enabled)
+
 ## Useful checks
 
 ```bash
@@ -100,6 +168,13 @@ ros2 service list | grep marker_seek
 - `stop_distance_m`: `0.25`
 - `search_timeout_s`: `12.0`
 - `max_retries`: `3`
+- `marker_x_sign`: `-1.0` (flip to `+1.0` if robot steers away from marker)
+- `hook_auto_deploy`: `true` (deploy on `SUCCEEDED`)
+- `hook_servo_topic`: `servo_cmd`
+- `hook_deploy_left`: `0.7`
+- `hook_deploy_right`: `0.0` (single-servo setup)
+- `pico_serial_enable`: `true` in launch
+- `pico_serial_port`: `/dev/serial/by-id/usb-MicroPython_Board_in_FS_mode_e663682593756333-if00`
 
 Override example (run node directly):
 
