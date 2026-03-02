@@ -1,41 +1,59 @@
-from machine import Pin, PWM
 import select
 import sys
 
-# Servo setup: Adjust the pins based on wiring.
-servo1 = PWM(Pin(0))
-servo2 = PWM(Pin(1))
+try:
+    # Kitronik board mode: "port 4" means servo channel 4.
+    from PicoRobotics import KitronikPicoRobotics
+except ImportError:
+    KitronikPicoRobotics = None
 
-servo1.freq(50)
-servo2.freq(50)
+if KitronikPicoRobotics is None:
+    from machine import Pin, PWM
 
-# Angle positions: Changeable, might not be exact, set_angle formula might
-# need adjustment, but try it out first.
+
+MODE = "KITRONIK" if KitronikPicoRobotics is not None else "PWM"
+
+# Single-servo setup.
+SERVO_PORT = 4      # Kitronik servo channel (1-8)
+SERVO_PIN = 4       # Raw PWM pin fallback
 UNLOCKED_ANGLE = 0
 LOCKED_ANGLE = 90
 
 
-def set_angle(servo, angle):
-    """Set servo to angle (0-180 degrees)."""
+if MODE == "KITRONIK":
+    board = KitronikPicoRobotics()
+    servo_pwm = None
+else:
+    board = None
+    servo_pwm = PWM(Pin(SERVO_PIN))
+    servo_pwm.freq(50)
+
+
+def set_angle(angle):
+    """Set hook servo angle (0-180)."""
+    angle = max(0, min(180, int(angle)))
+    if MODE == "KITRONIK":
+        board.servoWrite(SERVO_PORT, angle)
+        return
+
     pulse_us = 500 + (angle * 2000 // 180)
     duty = int(pulse_us * 65535 // 20000)
-    servo.duty_u16(duty)
+    servo_pwm.duty_u16(duty)
 
 
 def lock():
-    set_angle(servo1, LOCKED_ANGLE)
-    set_angle(servo2, LOCKED_ANGLE)
+    set_angle(LOCKED_ANGLE)
     print("LOCKED")
 
 
 def unlock():
-    set_angle(servo1, UNLOCKED_ANGLE)
-    set_angle(servo2, UNLOCKED_ANGLE)
+    set_angle(UNLOCKED_ANGLE)
     print("UNLOCKED")
 
 
 unlock()
 print("READY")
+print("MODE=", MODE, "SERVO_PORT=", SERVO_PORT, "SERVO_PIN=", SERVO_PIN)
 
 poll = select.poll()
 poll.register(sys.stdin, select.POLLIN)
@@ -43,7 +61,6 @@ poll.register(sys.stdin, select.POLLIN)
 while True:
     if poll.poll(100):
         cmd = sys.stdin.readline().strip().upper()
-
         if cmd == "LOCK":
             lock()
         elif cmd == "UNLOCK":

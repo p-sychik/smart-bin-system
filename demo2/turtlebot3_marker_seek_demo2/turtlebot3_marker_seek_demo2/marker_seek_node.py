@@ -22,6 +22,7 @@ import rclpy
 from geometry_msgs.msg import TwistStamped
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from turtlebot3_marker_seek_demo2.marker_seek_core import MarkerSeekCore
@@ -57,7 +58,9 @@ class MarkerSeekNode(Node):
         self.declare_parameter('aruco_dictionary', 'DICT_4X4_50')
         self.declare_parameter('marker_size_m', 0.10)
         self.declare_parameter('stop_distance_m', 0.25)
+        self.declare_parameter('stop_distance_tolerance_m', 0.03)
         self.declare_parameter('spin_speed_rad_s', 0.60)
+        self.declare_parameter('approach_turn_cap_rad_s', 0.0)
         self.declare_parameter('search_timeout_s', 12.0)
         self.declare_parameter('max_retries', 3)
         self.declare_parameter('retry_nudge_speed_m_s', 0.10)
@@ -66,10 +69,17 @@ class MarkerSeekNode(Node):
         self.declare_parameter('yaw_kp', 1.5)
         self.declare_parameter('distance_kp', 0.8)
         self.declare_parameter('lost_marker_timeout_s', 0.6)
+        self.declare_parameter('min_linear_scale', 0.0)
+        self.declare_parameter('angular_filter_alpha', 1.0)
         self.declare_parameter('heading_align_threshold_rad', 0.05)
         self.declare_parameter('heading_stop_yaw_rad', 0.15)
         self.declare_parameter('control_rate_hz', 20.0)
         self.declare_parameter('camera_horizontal_fov_rad', 1.10)
+        self.declare_parameter('yaw_filter_alpha', 0.30)
+        self.declare_parameter('yaw_deadband_rad', 0.05)
+        self.declare_parameter('marker_x_sign', -1.0)
+
+        self.declare_parameter('autostart', False)
 
         self.image_topic = str(self.get_parameter('image_topic').value)
         self.camera_info_topic = str(
@@ -86,18 +96,55 @@ class MarkerSeekNode(Node):
         self.camera_horizontal_fov_rad = float(
             self.get_parameter('camera_horizontal_fov_rad').value
         )
+        self.yaw_filter_alpha = float(
+            self.get_parameter('yaw_filter_alpha').value
+        )
+        self.yaw_deadband_rad = float(
+            self.get_parameter('yaw_deadband_rad').value
+        )
+        self.marker_x_sign = float(
+            self.get_parameter('marker_x_sign').value
+        )
+        stop_distance_tolerance_m = float(
+            self.get_parameter('stop_distance_tolerance_m').value
+        )
+        self.autostart = bool(self.get_parameter('autostart').value)
         if self.camera_horizontal_fov_rad <= 0.1:
             self.get_logger().warn(
                 'camera_horizontal_fov_rad too small; using 1.10 rad.'
             )
             self.camera_horizontal_fov_rad = 1.10
+        if not 0.0 <= self.yaw_filter_alpha <= 1.0:
+            self.get_logger().warn(
+                'yaw_filter_alpha must be in [0, 1]; using 0.30.'
+            )
+            self.yaw_filter_alpha = 0.30
+        if self.yaw_deadband_rad < 0.0:
+            self.get_logger().warn(
+                'yaw_deadband_rad must be non-negative; using 0.05.'
+            )
+            self.yaw_deadband_rad = 0.05
+        if abs(self.marker_x_sign) < 1e-6:
+            self.get_logger().warn(
+                'marker_x_sign cannot be 0.0; using -1.0.'
+            )
+            self.marker_x_sign = -1.0
+        if stop_distance_tolerance_m < 0.0:
+            self.get_logger().warn(
+                'stop_distance_tolerance_m must be non-negative; using 0.03.'
+            )
+            stop_distance_tolerance_m = 0.03
 
         core_config = {
             'stop_distance_m': float(
                 self.get_parameter('stop_distance_m').value
             ),
+            'stop_distance_tolerance_m': stop_distance_tolerance_m,
             'spin_speed_rad_s': float(
                 self.get_parameter('spin_speed_rad_s').value
+            ),
+            'approach_turn_cap_rad_s': float(
+                self.get_parameter('approach_turn_cap_rad_s').value
             ),
             'search_timeout_s': float(
                 self.get_parameter('search_timeout_s').value
@@ -114,6 +161,13 @@ class MarkerSeekNode(Node):
             ),
             'yaw_kp': float(self.get_parameter('yaw_kp').value),
             'distance_kp': float(self.get_parameter('distance_kp').value),
+            'min_linear_scale': float(
+                self.get_parameter('min_linear_scale').value
+            ),
+            'angular_filter_alpha': float(
+                self.get_parameter('angular_filter_alpha').value
+            ),
+            'yaw_deadband_rad': self.yaw_deadband_rad,
             'lost_marker_timeout_s': float(
                 self.get_parameter('lost_marker_timeout_s').value
             ),
@@ -132,6 +186,7 @@ class MarkerSeekNode(Node):
         self._camera_info_logged = False
         self._empty_distortion_warned = False
         self._intrinsics_fallback_warned = False
+        self._filtered_yaw_rad: Optional[float] = None
 
         self._aruco_dict = self._build_dictionary(self.aruco_dictionary_name)
         self._aruco_params = self._build_detector_parameters()
@@ -142,6 +197,12 @@ class MarkerSeekNode(Node):
             self.cmd_vel_topic,
             10,
         )
+        self.event_pub = self.create_publisher(
+            String,
+            '/marker_seek/events',
+            10,
+        )
+
         self.image_sub = self.create_subscription(
             Image,
             self.image_topic,
@@ -172,9 +233,24 @@ class MarkerSeekNode(Node):
         )
         self._publish_cmd(0.0, 0.0)
 
-        self.get_logger().info(
-            'marker_seek_node ready. Call /marker_seek/start to begin.'
-        )
+        if self.autostart:
+            success, message = self.core.start(now_s=time.monotonic())
+            if success:
+                self.get_logger().info(
+                    'marker_seek_node ready. Autostart enabled; behavior started.'
+                )
+                self._filtered_yaw_rad = None
+            else:
+                self.get_logger().warn(
+                    f'marker_seek_node ready. Autostart failed: {message}'
+                )
+        else:
+            self.get_logger().info(
+                'marker_seek_node ready. Call /marker_seek/start to begin.'
+            )
+
+    def shutdown(self) -> None:
+        self._publish_cmd(0.0, 0.0)
 
     def _build_dictionary(self, dictionary_name: str):
         dictionary_map: Dict[str, int] = {
@@ -380,14 +456,26 @@ class MarkerSeekNode(Node):
             return
 
         nearest_index, pose_x_m, z_m = nearest
-        x_m = pose_x_m
+        x_m = self.marker_x_sign * pose_x_m
         if 0 <= nearest_index < len(corners):
             yaw_from_pixel = self._compute_yaw_from_marker_center(
                 corners[nearest_index],
                 frame.shape[1],
             )
             if yaw_from_pixel is not None and np.isfinite(yaw_from_pixel):
-                x_m = z_m * math.tan(yaw_from_pixel)
+                measured_yaw = float(yaw_from_pixel)
+                if self._filtered_yaw_rad is None:
+                    filtered_yaw = measured_yaw
+                else:
+                    a = self.yaw_filter_alpha
+                    filtered_yaw = (
+                        (1.0 - a) * self._filtered_yaw_rad +
+                        a * measured_yaw
+                    )
+                if abs(filtered_yaw) < self.yaw_deadband_rad:
+                    filtered_yaw = 0.0
+                self._filtered_yaw_rad = filtered_yaw
+                x_m = z_m * math.tan(self.marker_x_sign * filtered_yaw)
 
         self.core.set_marker_measurement(
             x_m=x_m,
@@ -401,6 +489,7 @@ class MarkerSeekNode(Node):
         response.success = success
         response.message = message
         if success:
+            self._filtered_yaw_rad = None
             self.get_logger().info('Marker seek started.')
         else:
             self.get_logger().warn(message)
@@ -411,6 +500,7 @@ class MarkerSeekNode(Node):
         success, message = self.core.stop(now_s=time.monotonic())
         response.success = success
         response.message = message
+        self._filtered_yaw_rad = None
         self._publish_cmd(0.0, 0.0)
         self.get_logger().info('Marker seek stopped.')
         return response
@@ -423,10 +513,22 @@ class MarkerSeekNode(Node):
         msg.twist.angular.z = float(angular_z)
         self.cmd_vel_pub.publish(msg)
 
+    def _publish_event(self, event_name: str) -> None:
+        msg = String()
+        msg.data = event_name
+        self.event_pub.publish(msg)
+
     def _control_timer_cb(self) -> None:
         now_s = time.monotonic()
+        prev_state = self.core.state
         cmd = self.core.step(now_s=now_s)
-        self._publish_cmd(cmd.linear_x, cmd.angular_z)
+        active_states = {
+            SeekState.SEARCHING,
+            SeekState.APPROACHING,
+            SeekState.RETRY_NUDGE,
+        }
+        if prev_state in active_states or self.core.state in active_states:
+            self._publish_cmd(cmd.linear_x, cmd.angular_z)
 
         if self.core.state != self._last_state:
             old_state = self._last_state.value
@@ -435,6 +537,22 @@ class MarkerSeekNode(Node):
                 f'State transition: {old_state} -> {new_state}'
             )
             self._last_state = self.core.state
+
+        if self.core.state == SeekState.SUCCEEDED:
+            self.get_logger().info('Marker seek SUCCEEDED.')
+            self._publish_event('SUCCEEDED')
+            self._publish_cmd(0.0, 0.0)
+            self.core.stop(now_s=now_s)
+            self.get_logger().info(
+                'Target distance reached. Marker seek process stopped.'
+            )
+            if self.core.state != self._last_state:
+                old_state = self._last_state.value
+                new_state = self.core.state.value
+                self.get_logger().info(
+                    f'State transition: {old_state} -> {new_state}'
+                )
+                self._last_state = self.core.state
 
 
 def main(args=None) -> None:
@@ -447,11 +565,12 @@ def main(args=None) -> None:
         pass
     finally:
         try:
-            node._publish_cmd(0.0, 0.0)
+            node.shutdown()
         except Exception:
             pass
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -93,7 +93,7 @@ def test_detection_transitions_searching_to_approaching():
 
 def test_approach_control_clamps_angular_and_gates_forward():
     """Large heading error should clamp turn rate and suppress forward speed."""
-    core = MarkerSeekCore()
+    core = MarkerSeekCore(min_linear_scale=0.0)
     core.start(now_s=0.0)
     core.set_marker_measurement(x_m=10.0, z_m=0.5, now_s=0.1)
 
@@ -118,6 +118,21 @@ def test_close_marker_transitions_to_succeeded():
     core = MarkerSeekCore()
     core.start(now_s=0.0)
     core.set_marker_measurement(x_m=0.0, z_m=0.24, now_s=0.1)
+
+    cmd = core.step(now_s=0.1)
+    assert core.state == SeekState.SUCCEEDED
+    assert cmd.linear_x == pytest.approx(0.0)
+    assert cmd.angular_z == pytest.approx(0.0)
+
+
+def test_stop_distance_tolerance_allows_near_threshold_success():
+    """Configured tolerance should allow success slightly above stop distance."""
+    core = MarkerSeekCore(
+        stop_distance_m=0.25,
+        stop_distance_tolerance_m=0.03,
+    )
+    core.start(now_s=0.0)
+    core.set_marker_measurement(x_m=0.0, z_m=0.27, now_s=0.1)
 
     cmd = core.step(now_s=0.1)
     assert core.state == SeekState.SUCCEEDED

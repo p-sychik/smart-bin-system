@@ -53,13 +53,18 @@ class MarkerSeekCore:
     def __init__(
         self,
         stop_distance_m: float = 0.25,
+        stop_distance_tolerance_m: float = 0.03,
         spin_speed_rad_s: float = 0.60,
+        approach_turn_cap_rad_s: float = 0.0,
         search_timeout_s: float = 12.0,
         max_retries: int = 3,
         retry_nudge_speed_m_s: float = 0.10,
         retry_nudge_duration_s: float = 1.5,
         approach_speed_cap_m_s: float = 0.10,
         yaw_kp: float = 1.5,
+        yaw_deadband_rad: float = 0.0,
+        angular_filter_alpha: float = 1.0,
+        min_linear_scale: float = 0.1,
         distance_kp: float = 0.8,
         lost_marker_timeout_s: float = 0.6,
         heading_align_threshold_rad: float = 0.05,
@@ -67,17 +72,24 @@ class MarkerSeekCore:
     ) -> None:
         """Initialize configurable search/approach behavior parameters."""
         self.stop_distance_m = stop_distance_m
+        self.stop_distance_tolerance_m = max(0.0, stop_distance_tolerance_m)
         self.spin_speed_rad_s = spin_speed_rad_s
+        self.approach_turn_cap_rad_s = approach_turn_cap_rad_s
         self.search_timeout_s = search_timeout_s
         self.max_retries = max_retries
         self.retry_nudge_speed_m_s = retry_nudge_speed_m_s
         self.retry_nudge_duration_s = retry_nudge_duration_s
         self.approach_speed_cap_m_s = approach_speed_cap_m_s
         self.yaw_kp = yaw_kp
+        self.yaw_deadband_rad = max(0.0, yaw_deadband_rad)
+        self.angular_filter_alpha = self._clamp(angular_filter_alpha, 0.0, 1.0)
+        self.min_linear_scale = self._clamp(min_linear_scale, 0.0, 1.0)
         self.distance_kp = distance_kp
         self.lost_marker_timeout_s = lost_marker_timeout_s
         self.heading_align_threshold_rad = heading_align_threshold_rad
         self.heading_stop_yaw_rad = heading_stop_yaw_rad
+        if self.approach_turn_cap_rad_s <= 0.0:
+            self.approach_turn_cap_rad_s = self.spin_speed_rad_s
         if self.heading_stop_yaw_rad <= self.heading_align_threshold_rad:
             self.heading_stop_yaw_rad = self.heading_align_threshold_rad + 0.05
 
@@ -85,6 +97,7 @@ class MarkerSeekCore:
         self.state_start_time_s = 0.0
         self.retries_used = 0
         self.latest_marker: Optional[MarkerMeasurement] = None
+        self._filtered_angular_z = 0.0
 
     @staticmethod
     def _clamp(value: float, min_value: float, max_value: float) -> float:
@@ -102,12 +115,14 @@ class MarkerSeekCore:
 
         self.retries_used = 0
         self.latest_marker = None
+        self._filtered_angular_z = 0.0
         self._transition(SeekState.SEARCHING, now_s)
         return True, 'Marker seek started'
 
     def stop(self, now_s: float) -> Tuple[bool, str]:
         """Stop autonomous behavior and return to IDLE state."""
         self.latest_marker = None
+        self._filtered_angular_z = 0.0
         self._transition(SeekState.IDLE, now_s)
         return True, 'Marker seek stopped'
 
@@ -123,6 +138,7 @@ class MarkerSeekCore:
 
         self.latest_marker = MarkerMeasurement(x_m=x_m, z_m=z_m, stamp_s=now_s)
         if self.state == SeekState.SEARCHING:
+            self._filtered_angular_z = 0.0
             self._transition(SeekState.APPROACHING, now_s)
 
     def _marker_fresh(self, now_s: float) -> bool:
@@ -161,16 +177,25 @@ class MarkerSeekCore:
         x_m = self.latest_marker.x_m
         z_m = self.latest_marker.z_m
 
-        if z_m <= self.stop_distance_m:
+        success_distance_m = self.stop_distance_m + self.stop_distance_tolerance_m
+        if z_m <= success_distance_m:
             self._transition(SeekState.SUCCEEDED, now_s)
             return self._stop_command()
 
         yaw_error = math.atan2(x_m, z_m)
-        angular = self._clamp(
+        if abs(yaw_error) <= self.yaw_deadband_rad:
+            yaw_error = 0.0
+
+        desired_angular = self._clamp(
             self.yaw_kp * yaw_error,
-            -self.spin_speed_rad_s,
-            self.spin_speed_rad_s,
+            -self.approach_turn_cap_rad_s,
+            self.approach_turn_cap_rad_s,
         )
+        alpha = self.angular_filter_alpha
+        angular = (1.0 - alpha) * self._filtered_angular_z + alpha * desired_angular
+        if abs(angular) < 1e-4:
+            angular = 0.0
+        self._filtered_angular_z = angular
 
         linear_error = z_m - self.stop_distance_m
         linear_base = self._clamp(
@@ -182,14 +207,20 @@ class MarkerSeekCore:
         # Prefer rotate-first alignment so approach is less curved when heading error is large.
         yaw_abs = abs(yaw_error)
         if yaw_abs >= self.heading_stop_yaw_rad:
-            linear_scale = 0.0
+            linear_scale = self.min_linear_scale
         elif yaw_abs <= self.heading_align_threshold_rad:
             linear_scale = 1.0
         else:
             span = self.heading_stop_yaw_rad - self.heading_align_threshold_rad
-            linear_scale = (self.heading_stop_yaw_rad - yaw_abs) / max(1e-6, span)
+            blend = (self.heading_stop_yaw_rad - yaw_abs) / max(1e-6, span)
+            linear_scale = self.min_linear_scale + (
+                (1.0 - self.min_linear_scale) * blend
+            )
 
         linear = linear_base * linear_scale
+        if yaw_error == 0.0:
+            angular = 0.0
+            self._filtered_angular_z = 0.0
         return VelocityCommand(linear_x=linear, angular_z=angular)
 
     def _step_retry_nudge(self, now_s: float) -> VelocityCommand:
@@ -202,6 +233,7 @@ class MarkerSeekCore:
 
         self.retries_used += 1
         self.latest_marker = None
+        self._filtered_angular_z = 0.0
         self._transition(SeekState.SEARCHING, now_s)
         return self._search_command()
 

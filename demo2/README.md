@@ -40,6 +40,45 @@ source install/setup.bash
 
 Use separate terminals.
 
+### Quick runner script
+
+From workspace root:
+
+```bash
+./demo2/run_marker_seek.sh build
+./demo2/run_marker_seek.sh run
+```
+
+Useful controls in another terminal:
+
+```bash
+./demo2/run_marker_seek.sh start
+./demo2/run_marker_seek.sh stop
+./demo2/run_marker_seek.sh status
+```
+
+### Full end-to-end helper (robot + operator)
+
+This script SSHes to the robot (default `ubuntu@SNOVER`) to start bringup and
+camera in the background, then runs Demo 2 locally:
+
+```bash
+./demo2/run_demo2_full.sh up --build
+```
+
+Useful remote controls:
+
+```bash
+./demo2/run_demo2_full.sh remote-status
+./demo2/run_demo2_full.sh remote-down
+```
+
+Override robot host if needed:
+
+```bash
+REMOTE_HOST=snover ./demo2/run_demo2_full.sh up
+```
+
 ### 1) On TurtleBot (robot-side base + camera)
 
 ```bash
@@ -81,12 +120,16 @@ Stop behavior:
 ros2 service call /marker_seek/stop std_srvs/srv/Trigger "{}"
 ```
 
+When marker seek reaches the target distance (`SUCCEEDED`), the node now
+automatically stops the marker-seek process (transitions back to `IDLE`).
+
 ## Useful checks
 
 ```bash
 ros2 topic list
 ros2 topic hz /camera/image_raw
 ros2 topic info /cmd_vel
+ros2 topic echo /marker_seek/events
 ros2 service list | grep marker_seek
 ```
 
@@ -98,8 +141,11 @@ ros2 service list | grep marker_seek
 - `aruco_dictionary`: `DICT_4X4_50`
 - `marker_size_m`: `0.10`
 - `stop_distance_m`: `0.25`
+- `stop_distance_tolerance_m`: `0.03` (success margin for near-threshold pose noise)
 - `search_timeout_s`: `12.0`
 - `max_retries`: `3`
+- `marker_x_sign`: `-1.0` (flip to `+1.0` if robot steers away from marker)
+- `autostart`: `false` (start behavior manually via `/marker_seek/start`)
 
 Override example (run node directly):
 
