@@ -22,7 +22,7 @@ import rclpy
 from geometry_msgs.msg import TwistStamped
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from turtlebot3_marker_seek_demo2.marker_seek_core import MarkerSeekCore
@@ -35,11 +35,6 @@ except ImportError as exc:
     IMPORT_ERROR = exc
 else:
     IMPORT_ERROR = None
-
-try:
-    import serial
-except ImportError:
-    serial = None
 
 
 class MarkerSeekNode(Node):
@@ -63,6 +58,7 @@ class MarkerSeekNode(Node):
         self.declare_parameter('aruco_dictionary', 'DICT_4X4_50')
         self.declare_parameter('marker_size_m', 0.10)
         self.declare_parameter('stop_distance_m', 0.25)
+        self.declare_parameter('stop_distance_tolerance_m', 0.03)
         self.declare_parameter('spin_speed_rad_s', 0.60)
         self.declare_parameter('approach_turn_cap_rad_s', 0.0)
         self.declare_parameter('search_timeout_s', 12.0)
@@ -82,30 +78,6 @@ class MarkerSeekNode(Node):
         self.declare_parameter('yaw_filter_alpha', 0.30)
         self.declare_parameter('yaw_deadband_rad', 0.05)
         self.declare_parameter('marker_x_sign', -1.0)
-
-        # Hook deployment controls.
-        self.declare_parameter('hook_auto_deploy', True)
-        self.declare_parameter('hook_servo_enable', True)
-        self.declare_parameter('hook_servo_topic', 'servo_cmd')
-        self.declare_parameter('hook_servo_rate_hz', 20.0)
-        self.declare_parameter('hook_deploy_left', 0.7)
-        self.declare_parameter('hook_deploy_right', 0.0)
-        self.declare_parameter('hook_stow_left', 0.0)
-        self.declare_parameter('hook_stow_right', 0.0)
-        self.declare_parameter('hook_stow_on_start', True)
-        self.declare_parameter('hook_stow_on_stop', False)
-
-        # Optional direct serial control to Pico.
-        self.declare_parameter('pico_serial_enable', False)
-        self.declare_parameter(
-            'pico_serial_port',
-            '/dev/serial/by-id/usb-MicroPython_Board_in_FS_mode_e663682593756333-if00',
-        )
-        self.declare_parameter('pico_serial_baud', 115200)
-        self.declare_parameter('pico_serial_timeout_s', 0.40)
-        self.declare_parameter('pico_check_on_start', True)
-        self.declare_parameter('pico_lock_command', 'LOCK')
-        self.declare_parameter('pico_unlock_command', 'UNLOCK')
 
         self.declare_parameter('autostart', False)
 
@@ -133,56 +105,8 @@ class MarkerSeekNode(Node):
         self.marker_x_sign = float(
             self.get_parameter('marker_x_sign').value
         )
-        self.hook_auto_deploy = bool(
-            self.get_parameter('hook_auto_deploy').value
-        )
-        self.hook_servo_enable = bool(
-            self.get_parameter('hook_servo_enable').value
-        )
-        self.hook_servo_topic = str(
-            self.get_parameter('hook_servo_topic').value
-        )
-        self.hook_servo_rate_hz = float(
-            self.get_parameter('hook_servo_rate_hz').value
-        )
-        self.hook_deploy_left = float(
-            self.get_parameter('hook_deploy_left').value
-        )
-        self.hook_deploy_right = float(
-            self.get_parameter('hook_deploy_right').value
-        )
-        self.hook_stow_left = float(
-            self.get_parameter('hook_stow_left').value
-        )
-        self.hook_stow_right = float(
-            self.get_parameter('hook_stow_right').value
-        )
-        self.hook_stow_on_start = bool(
-            self.get_parameter('hook_stow_on_start').value
-        )
-        self.hook_stow_on_stop = bool(
-            self.get_parameter('hook_stow_on_stop').value
-        )
-        self.pico_serial_enable = bool(
-            self.get_parameter('pico_serial_enable').value
-        )
-        self.pico_serial_port = str(
-            self.get_parameter('pico_serial_port').value
-        )
-        self.pico_serial_baud = int(
-            self.get_parameter('pico_serial_baud').value
-        )
-        self.pico_serial_timeout_s = float(
-            self.get_parameter('pico_serial_timeout_s').value
-        )
-        self.pico_check_on_start = bool(
-            self.get_parameter('pico_check_on_start').value
-        )
-        self.pico_lock_command = str(
-            self.get_parameter('pico_lock_command').value
-        )
-        self.pico_unlock_command = str(
-            self.get_parameter('pico_unlock_command').value
+        stop_distance_tolerance_m = float(
+            self.get_parameter('stop_distance_tolerance_m').value
         )
         self.autostart = bool(self.get_parameter('autostart').value)
         if self.camera_horizontal_fov_rad <= 0.1:
@@ -205,26 +129,17 @@ class MarkerSeekNode(Node):
                 'marker_x_sign cannot be 0.0; using -1.0.'
             )
             self.marker_x_sign = -1.0
-        if self.hook_servo_rate_hz < 1.0:
+        if stop_distance_tolerance_m < 0.0:
             self.get_logger().warn(
-                'hook_servo_rate_hz too small; using 20.0.'
+                'stop_distance_tolerance_m must be non-negative; using 0.03.'
             )
-            self.hook_servo_rate_hz = 20.0
-        if self.pico_serial_baud <= 0:
-            self.get_logger().warn(
-                'pico_serial_baud must be positive; using 115200.'
-            )
-            self.pico_serial_baud = 115200
-        if self.pico_serial_timeout_s <= 0.0:
-            self.get_logger().warn(
-                'pico_serial_timeout_s must be positive; using 0.40.'
-            )
-            self.pico_serial_timeout_s = 0.40
+            stop_distance_tolerance_m = 0.03
 
         core_config = {
             'stop_distance_m': float(
                 self.get_parameter('stop_distance_m').value
             ),
+            'stop_distance_tolerance_m': stop_distance_tolerance_m,
             'spin_speed_rad_s': float(
                 self.get_parameter('spin_speed_rad_s').value
             ),
@@ -282,27 +197,11 @@ class MarkerSeekNode(Node):
             self.cmd_vel_topic,
             10,
         )
-        self._hook_servo_left = self.hook_stow_left
-        self._hook_servo_right = self.hook_stow_right
-        self._hook_deploy_sent = False
-        self.servo_pub = None
-        self.servo_timer = None
-        if self.hook_servo_enable:
-            self.servo_pub = self.create_publisher(
-                Float32MultiArray,
-                self.hook_servo_topic,
-                10,
-            )
-            servo_period = 1.0 / self.hook_servo_rate_hz
-            self.servo_timer = self.create_timer(
-                servo_period,
-                self._publish_hook_servo,
-            )
-            self._publish_hook_servo()
-
-        self._pico_serial = None
-        if self.pico_serial_enable:
-            self._open_pico_serial()
+        self.event_pub = self.create_publisher(
+            String,
+            '/marker_seek/events',
+            10,
+        )
 
         self.image_sub = self.create_subscription(
             Image,
@@ -341,9 +240,6 @@ class MarkerSeekNode(Node):
                     'marker_seek_node ready. Autostart enabled; behavior started.'
                 )
                 self._filtered_yaw_rad = None
-                self._hook_deploy_sent = False
-                if self.hook_stow_on_start:
-                    self._stow_hook()
             else:
                 self.get_logger().warn(
                     f'marker_seek_node ready. Autostart failed: {message}'
@@ -353,114 +249,8 @@ class MarkerSeekNode(Node):
                 'marker_seek_node ready. Call /marker_seek/start to begin.'
             )
 
-    def _publish_hook_servo(self) -> None:
-        if self.servo_pub is None:
-            return
-        msg = Float32MultiArray()
-        msg.data = [self._hook_servo_left, self._hook_servo_right]
-        self.servo_pub.publish(msg)
-
-    def _set_hook_servo_positions(self, left: float, right: float) -> None:
-        self._hook_servo_left = float(left)
-        self._hook_servo_right = float(right)
-        self._publish_hook_servo()
-
-    def _open_pico_serial(self) -> None:
-        if serial is None:
-            self.get_logger().warn(
-                'pyserial not available; Pico serial control is disabled. '
-                'Install python3-serial to enable it.'
-            )
-            return
-        try:
-            self._pico_serial = serial.Serial(
-                port=self.pico_serial_port,
-                baudrate=self.pico_serial_baud,
-                timeout=self.pico_serial_timeout_s,
-                write_timeout=self.pico_serial_timeout_s,
-            )
-        except Exception as exc:
-            self.get_logger().warn(
-                f'Failed to open Pico serial port {self.pico_serial_port}: {exc}. '
-                'Check /dev/ttyACM* assignments.'
-            )
-            self._pico_serial = None
-            return
-
-        self.get_logger().info(
-            f'Pico serial connected on {self.pico_serial_port} '
-            f'@ {self.pico_serial_baud} bps.'
-        )
-        time.sleep(0.20)
-        if self.pico_check_on_start:
-            status = self._send_pico_command('STATUS')
-            if status is not None:
-                self.get_logger().info(f'Pico STATUS response: {status}')
-            else:
-                self.get_logger().warn(
-                    'No STATUS response from Pico (continuing anyway).'
-                )
-
-    def _close_pico_serial(self) -> None:
-        if self._pico_serial is None:
-            return
-        try:
-            self._pico_serial.close()
-        except Exception:
-            pass
-        self._pico_serial = None
-
-    def _send_pico_command(self, command: str) -> Optional[str]:
-        if self._pico_serial is None:
-            return None
-        cmd = command.strip().upper()
-        if not cmd:
-            return None
-        try:
-            self._pico_serial.reset_input_buffer()
-            self._pico_serial.write((cmd + '\n').encode('ascii', errors='ignore'))
-            self._pico_serial.flush()
-            reply = self._pico_serial.readline().decode(
-                'utf-8',
-                errors='ignore',
-            ).strip()
-            return reply or None
-        except Exception as exc:
-            self.get_logger().warn(
-                f'Failed to send command "{cmd}" to Pico: {exc}'
-            )
-            self._close_pico_serial()
-            return None
-
-    def _stow_hook(self) -> None:
-        if self.hook_servo_enable:
-            self._set_hook_servo_positions(
-                self.hook_stow_left,
-                self.hook_stow_right,
-            )
-        if self.pico_serial_enable:
-            self._send_pico_command(self.pico_unlock_command)
-
-    def _deploy_hook(self) -> None:
-        if self._hook_deploy_sent:
-            return
-
-        if self.hook_servo_enable:
-            self._set_hook_servo_positions(
-                self.hook_deploy_left,
-                self.hook_deploy_right,
-            )
-        if self.pico_serial_enable:
-            response = self._send_pico_command(self.pico_lock_command)
-            if response is not None:
-                self.get_logger().info(f'Pico lock response: {response}')
-
-        self._hook_deploy_sent = True
-        self.get_logger().info('Hook deploy command sent.')
-
     def shutdown(self) -> None:
         self._publish_cmd(0.0, 0.0)
-        self._close_pico_serial()
 
     def _build_dictionary(self, dictionary_name: str):
         dictionary_map: Dict[str, int] = {
@@ -700,9 +490,6 @@ class MarkerSeekNode(Node):
         response.message = message
         if success:
             self._filtered_yaw_rad = None
-            self._hook_deploy_sent = False
-            if self.hook_stow_on_start:
-                self._stow_hook()
             self.get_logger().info('Marker seek started.')
         else:
             self.get_logger().warn(message)
@@ -714,9 +501,6 @@ class MarkerSeekNode(Node):
         response.success = success
         response.message = message
         self._filtered_yaw_rad = None
-        if self.hook_stow_on_stop:
-            self._stow_hook()
-            self._hook_deploy_sent = False
         self._publish_cmd(0.0, 0.0)
         self.get_logger().info('Marker seek stopped.')
         return response
@@ -729,17 +513,22 @@ class MarkerSeekNode(Node):
         msg.twist.angular.z = float(angular_z)
         self.cmd_vel_pub.publish(msg)
 
+    def _publish_event(self, event_name: str) -> None:
+        msg = String()
+        msg.data = event_name
+        self.event_pub.publish(msg)
+
     def _control_timer_cb(self) -> None:
         now_s = time.monotonic()
+        prev_state = self.core.state
         cmd = self.core.step(now_s=now_s)
-        self._publish_cmd(cmd.linear_x, cmd.angular_z)
-
-        if (
-            self.hook_auto_deploy and
-            self.core.state == SeekState.SUCCEEDED and
-            not self._hook_deploy_sent
-        ):
-            self._deploy_hook()
+        active_states = {
+            SeekState.SEARCHING,
+            SeekState.APPROACHING,
+            SeekState.RETRY_NUDGE,
+        }
+        if prev_state in active_states or self.core.state in active_states:
+            self._publish_cmd(cmd.linear_x, cmd.angular_z)
 
         if self.core.state != self._last_state:
             old_state = self._last_state.value
@@ -748,6 +537,22 @@ class MarkerSeekNode(Node):
                 f'State transition: {old_state} -> {new_state}'
             )
             self._last_state = self.core.state
+
+        if self.core.state == SeekState.SUCCEEDED:
+            self.get_logger().info('Marker seek SUCCEEDED.')
+            self._publish_event('SUCCEEDED')
+            self._publish_cmd(0.0, 0.0)
+            self.core.stop(now_s=now_s)
+            self.get_logger().info(
+                'Target distance reached. Marker seek process stopped.'
+            )
+            if self.core.state != self._last_state:
+                old_state = self._last_state.value
+                new_state = self.core.state.value
+                self.get_logger().info(
+                    f'State transition: {old_state} -> {new_state}'
+                )
+                self._last_state = self.core.state
 
 
 def main(args=None) -> None:

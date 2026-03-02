@@ -53,6 +53,7 @@ class MarkerSeekCore:
     def __init__(
         self,
         stop_distance_m: float = 0.25,
+        stop_distance_tolerance_m: float = 0.03,
         spin_speed_rad_s: float = 0.60,
         approach_turn_cap_rad_s: float = 0.0,
         search_timeout_s: float = 12.0,
@@ -63,7 +64,7 @@ class MarkerSeekCore:
         yaw_kp: float = 1.5,
         yaw_deadband_rad: float = 0.0,
         angular_filter_alpha: float = 1.0,
-        min_linear_scale: float = 0.0,
+        min_linear_scale: float = 0.1,
         distance_kp: float = 0.8,
         lost_marker_timeout_s: float = 0.6,
         heading_align_threshold_rad: float = 0.05,
@@ -71,6 +72,7 @@ class MarkerSeekCore:
     ) -> None:
         """Initialize configurable search/approach behavior parameters."""
         self.stop_distance_m = stop_distance_m
+        self.stop_distance_tolerance_m = max(0.0, stop_distance_tolerance_m)
         self.spin_speed_rad_s = spin_speed_rad_s
         self.approach_turn_cap_rad_s = approach_turn_cap_rad_s
         self.search_timeout_s = search_timeout_s
@@ -175,7 +177,8 @@ class MarkerSeekCore:
         x_m = self.latest_marker.x_m
         z_m = self.latest_marker.z_m
 
-        if z_m <= self.stop_distance_m:
+        success_distance_m = self.stop_distance_m + self.stop_distance_tolerance_m
+        if z_m <= success_distance_m:
             self._transition(SeekState.SUCCEEDED, now_s)
             return self._stop_command()
 
