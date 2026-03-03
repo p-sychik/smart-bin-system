@@ -26,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'combined_teleop_node = turtlebot3_combined_teleop.combined_teleop_node:main',
+            'combined_teleop_ui_node = turtlebot3_combined_teleop.combined_teleop_ui_node:main',
         ],
     },
 )
