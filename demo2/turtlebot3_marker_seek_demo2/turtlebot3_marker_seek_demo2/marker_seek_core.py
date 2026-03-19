@@ -26,8 +26,16 @@ class SeekState(str, Enum):
     SEARCHING = 'SEARCHING'
     APPROACHING = 'APPROACHING'
     RETRY_NUDGE = 'RETRY_NUDGE'
+    OBSTACLE_WAIT = 'OBSTACLE_WAIT'
     SUCCEEDED = 'SUCCEEDED'
     FAILED = 'FAILED'
+
+
+_MOVING_STATES = {
+    SeekState.SEARCHING,
+    SeekState.APPROACHING,
+    SeekState.RETRY_NUDGE,
+}
 
 
 @dataclass(frozen=True)
@@ -99,6 +107,9 @@ class MarkerSeekCore:
         self.latest_marker: Optional[MarkerMeasurement] = None
         self._filtered_angular_z = 0.0
 
+        self._pre_obstacle_state: Optional[SeekState] = None
+        self._pre_obstacle_state_start_s: float = 0.0
+
     @staticmethod
     def _clamp(value: float, min_value: float, max_value: float) -> float:
         return max(min(value, max_value), min_value)
@@ -116,6 +127,7 @@ class MarkerSeekCore:
         self.retries_used = 0
         self.latest_marker = None
         self._filtered_angular_z = 0.0
+        self._pre_obstacle_state = None
         self._transition(SeekState.SEARCHING, now_s)
         return True, 'Marker seek started'
 
@@ -123,6 +135,7 @@ class MarkerSeekCore:
         """Stop autonomous behavior and return to IDLE state."""
         self.latest_marker = None
         self._filtered_angular_z = 0.0
+        self._pre_obstacle_state = None
         self._transition(SeekState.IDLE, now_s)
         return True, 'Marker seek stopped'
 
@@ -140,6 +153,31 @@ class MarkerSeekCore:
         if self.state == SeekState.SEARCHING:
             self._filtered_angular_z = 0.0
             self._transition(SeekState.APPROACHING, now_s)
+
+    @property
+    def is_in_moving_state(self) -> bool:
+        return self.state in _MOVING_STATES
+
+    def set_obstacle_detected(self, now_s: float) -> bool:
+        if self.state not in _MOVING_STATES:
+            return False
+
+        self._pre_obstacle_state = self.state
+        self._pre_obstacle_state_start_s = self.state_start_time_s
+        self._transition(SeekState.OBSTACLE_WAIT, now_s)
+        return True
+
+    def clear_obstacle(self, now_s: float) -> bool:
+        if self.state != SeekState.OBSTACLE_WAIT:
+            return False
+        if self._pre_obstacle_state is None:
+            self._transition(SeekState.SEARCHING, now_s)
+            return True
+
+        self.state = self._pre_obstacle_state
+        self.state_start_time_s = self._pre_obstacle_state_start_s
+        self._pre_obstacle_state = None
+        return True
 
     def _marker_fresh(self, now_s: float) -> bool:
         if self.latest_marker is None:
@@ -247,6 +285,8 @@ class MarkerSeekCore:
             return self._step_approaching(now_s)
         if self.state == SeekState.RETRY_NUDGE:
             return self._step_retry_nudge(now_s)
+        if self.state == SeekState.OBSTACLE_WAIT:
+            return self._stop_command()
         if self.state == SeekState.SUCCEEDED:
             return self._stop_command()
         if self.state == SeekState.FAILED:

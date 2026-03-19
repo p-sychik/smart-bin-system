@@ -15,7 +15,7 @@
 
 import math
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import rclpy
@@ -36,9 +36,17 @@ except ImportError as exc:
 else:
     IMPORT_ERROR = None
 
+try:
+    from grove.grove_ultrasonic_ranger import GroveUltrasonicRanger
+    _SONAR_AVAILABLE = True
+except ImportError:
+    _SONAR_AVAILABLE = False
+
 
 class MarkerSeekNode(Node):
     """Autonomous marker search and approach node."""
+
+    _DEFAULT_SONAR_PINS: List[int] = [5, 16, 18, 22, 24]
 
     def __init__(self) -> None:
         """Initialize ROS interfaces and perception pipeline."""
@@ -78,8 +86,13 @@ class MarkerSeekNode(Node):
         self.declare_parameter('yaw_filter_alpha', 0.30)
         self.declare_parameter('yaw_deadband_rad', 0.05)
         self.declare_parameter('marker_x_sign', -1.0)
-
         self.declare_parameter('autostart', False)
+
+        self.declare_parameter('obstacle_avoidance_enabled', True)
+        self.declare_parameter('obstacle_threshold_cm', 30.0)
+        self.declare_parameter('obstacle_trigger_count', 3)
+        self.declare_parameter('obstacle_clear_count', 3)
+        self.declare_parameter('sonar_pins', self._DEFAULT_SONAR_PINS)
 
         self.image_topic = str(self.get_parameter('image_topic').value)
         self.camera_info_topic = str(
@@ -134,6 +147,56 @@ class MarkerSeekNode(Node):
                 'stop_distance_tolerance_m must be non-negative; using 0.03.'
             )
             stop_distance_tolerance_m = 0.03
+
+        self._obstacle_enabled = bool(
+            self.get_parameter('obstacle_avoidance_enabled').value
+        )
+        self._obstacle_threshold_cm = float(
+            self.get_parameter('obstacle_threshold_cm').value
+        )
+        self._obstacle_trigger_count = max(
+            1, int(self.get_parameter('obstacle_trigger_count').value)
+        )
+        self._obstacle_clear_count = max(
+            1, int(self.get_parameter('obstacle_clear_count').value)
+        )
+        sonar_pins_raw = self.get_parameter('sonar_pins').value
+        sonar_pins: List[int] = [int(p) for p in sonar_pins_raw]
+
+        self._sonars: List = []
+        self._sonar_labels: List[str] = []
+        if self._obstacle_enabled and _SONAR_AVAILABLE:
+            for i, pin in enumerate(sonar_pins):
+                try:
+                    sensor = GroveUltrasonicRanger(pin)
+                    self._sonars.append(sensor)
+                    self._sonar_labels.append(f'sonar_{i + 1} (pin {pin})')
+                except Exception as e:
+                    self.get_logger().warn(
+                        f'Failed to init sonar on pin {pin}: {e}'
+                    )
+            if self._sonars:
+                self.get_logger().info(
+                    f'Obstacle avoidance active: {len(self._sonars)} sensor(s), '
+                    f'threshold={self._obstacle_threshold_cm} cm'
+                )
+            else:
+                self.get_logger().warn(
+                    'No ultrasonic sensors initialized — obstacle avoidance disabled.'
+                )
+                self._obstacle_enabled = False
+        elif self._obstacle_enabled and not _SONAR_AVAILABLE:
+            self.get_logger().warn(
+                'grove library not found — obstacle avoidance disabled. '
+                'Install with: pip3 install grove.py'
+            )
+            self._obstacle_enabled = False
+        else:
+            self.get_logger().info('Obstacle avoidance disabled by parameter.')
+
+        self._consecutive_obstacle_hits = 0
+        self._consecutive_clears = 0
+        self._obstacle_active = False
 
         core_config = {
             'stop_distance_m': float(
@@ -276,8 +339,6 @@ class MarkerSeekNode(Node):
         return cv2.aruco.DetectorParameters_create()
 
     def _build_detector(self):
-        # Prefer legacy detectMarkers path because some OpenCV Python builds
-        # have runtime instability in ArucoDetector.detectMarkers.
         if hasattr(cv2.aruco, 'ArucoDetector'):
             return None
         return None
@@ -291,7 +352,6 @@ class MarkerSeekNode(Node):
 
         camera_matrix = np.array(msg.k, dtype=np.float64).reshape((3, 3))
         if np.allclose(camera_matrix, 0.0):
-            # Fallback when driver publishes no calibration/intrinsics.
             width = max(1.0, float(msg.width))
             height = max(1.0, float(msg.height))
             fx = width
@@ -311,7 +371,6 @@ class MarkerSeekNode(Node):
 
         self.camera_matrix = camera_matrix
         if len(msg.d) == 0:
-            # Some camera drivers publish empty distortion; treat as zero-distortion.
             self.dist_coeffs = np.zeros((5, 1), dtype=np.float64)
             if not self._empty_distortion_warned:
                 self.get_logger().warn(
@@ -330,9 +389,6 @@ class MarkerSeekNode(Node):
         gray_image = np.ascontiguousarray(gray_image, dtype=np.uint8)
         if self._aruco_detector is not None:
             return self._aruco_detector.detectMarkers(gray_image)
-        # OpenCV 4.6.0 on this platform can segfault when the `parameters=`
-        # argument is supplied to detectMarkers. Use default parameters to
-        # keep runtime stable.
         return cv2.aruco.detectMarkers(gray_image, self._aruco_dict)
 
     def _estimate_poses(self, corners):
@@ -490,6 +546,9 @@ class MarkerSeekNode(Node):
         response.message = message
         if success:
             self._filtered_yaw_rad = None
+            self._consecutive_obstacle_hits = 0
+            self._consecutive_clears = 0
+            self._obstacle_active = False
             self.get_logger().info('Marker seek started.')
         else:
             self.get_logger().warn(message)
@@ -501,6 +560,7 @@ class MarkerSeekNode(Node):
         response.success = success
         response.message = message
         self._filtered_yaw_rad = None
+        self._obstacle_active = False
         self._publish_cmd(0.0, 0.0)
         self.get_logger().info('Marker seek stopped.')
         return response
@@ -518,8 +578,62 @@ class MarkerSeekNode(Node):
         msg.data = event_name
         self.event_pub.publish(msg)
 
+    def _read_sonars(self) -> Tuple[bool, float, str]:
+        min_dist = float('inf')
+        triggered_label = ''
+        for sensor, label in zip(self._sonars, self._sonar_labels):
+            try:
+                dist_cm = sensor.get_distance()
+            except Exception:
+                continue
+            if dist_cm < min_dist:
+                min_dist = dist_cm
+                triggered_label = label
+        obstacle = min_dist < self._obstacle_threshold_cm
+        return obstacle, min_dist, triggered_label
+
+    def _update_obstacle_state(self, now_s: float) -> None:
+        if not self._obstacle_enabled or not self._sonars:
+            return
+
+        obstacle_raw, min_dist, label = self._read_sonars()
+
+        if obstacle_raw:
+            self._consecutive_obstacle_hits += 1
+            self._consecutive_clears = 0
+        else:
+            self._consecutive_clears += 1
+            self._consecutive_obstacle_hits = 0
+
+        if (
+            not self._obstacle_active
+            and self._consecutive_obstacle_hits >= self._obstacle_trigger_count
+            and self.core.is_in_moving_state
+        ):
+            transitioned = self.core.set_obstacle_detected(now_s)
+            if transitioned:
+                self._obstacle_active = True
+                self.get_logger().warn(
+                    f'OBSTACLE detected at {min_dist:.1f} cm ({label}) — stopping.'
+                )
+                self._publish_event('OBSTACLE_DETECTED')
+                self._publish_cmd(0.0, 0.0)
+
+        if (
+            self._obstacle_active
+            and self._consecutive_clears >= self._obstacle_clear_count
+        ):
+            resumed = self.core.clear_obstacle(now_s)
+            if resumed:
+                self._obstacle_active = False
+                self.get_logger().info('Obstacle cleared — resuming.')
+                self._publish_event('OBSTACLE_CLEARED')
+
     def _control_timer_cb(self) -> None:
         now_s = time.monotonic()
+
+        self._update_obstacle_state(now_s)
+
         prev_state = self.core.state
         cmd = self.core.step(now_s=now_s)
         active_states = {
@@ -529,6 +643,9 @@ class MarkerSeekNode(Node):
         }
         if prev_state in active_states or self.core.state in active_states:
             self._publish_cmd(cmd.linear_x, cmd.angular_z)
+
+        if self.core.state == SeekState.OBSTACLE_WAIT:
+            self._publish_cmd(0.0, 0.0)
 
         if self.core.state != self._last_state:
             old_state = self._last_state.value
