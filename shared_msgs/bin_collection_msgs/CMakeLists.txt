@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/AbortMission.srv"
 
   "action/ExecutePath.action"
+  "action/AlignToMarker.action"
   "action/ApproachBin.action"
   "action/AlignToHook.action"
   "action/DockToBin.action"

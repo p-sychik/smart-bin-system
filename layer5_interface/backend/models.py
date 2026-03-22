@@ -16,6 +16,7 @@ class Bin(Base):
     location_name = Column(String, nullable=False)
     path_to_bin_id = Column(String, nullable=False)  # Path ID to reach the bin
     path_to_collection_id = Column(String, nullable=False)  # Path ID from bin to collection point
+    pickup_marker_id = Column(Integer, nullable=False)
     home_pose_x = Column(Float, default=0.0)
     home_pose_y = Column(Float, default=0.0)
     home_pose_z = Column(Float, default=0.0)

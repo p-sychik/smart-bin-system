@@ -3,8 +3,11 @@ import sys
 import termios
 import time
 import tty
+from datetime import datetime
 
 import rclpy
+from bin_collection_msgs.srv import StartRecording
+from bin_collection_msgs.srv import StopRecording
 from rclpy.clock import Clock
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
@@ -34,6 +37,10 @@ Recording:
 
 Marker Seek:
     F : Start marker seek
+
+Odom Path Capture:
+    R : Start odometry path capture
+    B : Stop odometry path capture
 
     T : Run test sequence
 
@@ -94,6 +101,18 @@ class CombinedTeleopNode(Node):
             '/marker_seek/events',
             self._marker_seek_event_callback,
             10,
+        )
+        self.path_recording_active = False
+        self.path_recording_id = ''
+        self.path_recording_description = ''
+        self.last_path_recording_message = 'IDLE'
+        self.path_start_client = self.create_client(
+            StartRecording,
+            '/path_manager/start_recording',
+        )
+        self.path_stop_client = self.create_client(
+            StopRecording,
+            '/path_manager/stop_recording',
         )
 
     def publish_cmd_vel(self):
@@ -204,6 +223,70 @@ class CombinedTeleopNode(Node):
 
         return bool(response.success), response.message
 
+    def _generate_path_id(self):
+        return 'path-' + datetime.now().strftime('%Y%m%d-%H%M%S')
+
+    def start_path_recording(self, path_id='', description=''):
+        if self.path_recording_active:
+            message = f'Path capture already running for {self.path_recording_id}.'
+            self.last_path_recording_message = message
+            print(message)
+            return False, message
+        if not self.path_start_client.wait_for_service(timeout_sec=0.20):
+            message = '/path_manager/start_recording unavailable.'
+            self.last_path_recording_message = message
+            print(message)
+            return False, message
+
+        request = StartRecording.Request()
+        request.path_id = path_id.strip() or self._generate_path_id()
+        request.description = description.strip()
+        future = self.path_start_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        response = future.result()
+        if response is None or not response.success:
+            detail = response.message if response is not None else 'no response'
+            message = f'Failed to start odom capture: {detail}'
+            self.last_path_recording_message = message
+            print(message)
+            return False, message
+
+        self.path_recording_active = True
+        self.path_recording_id = request.path_id
+        self.path_recording_description = request.description
+        self.last_path_recording_message = response.message
+        print(response.message)
+        return True, response.message
+
+    def stop_path_recording(self):
+        if not self.path_recording_active:
+            message = 'No odom path capture is running.'
+            self.last_path_recording_message = message
+            print(message)
+            return False, message
+        if not self.path_stop_client.wait_for_service(timeout_sec=0.20):
+            message = '/path_manager/stop_recording unavailable.'
+            self.last_path_recording_message = message
+            print(message)
+            return False, message
+
+        request = StopRecording.Request()
+        future = self.path_stop_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        response = future.result()
+        if response is None or not response.success:
+            detail = response.message if response is not None else 'no response'
+            message = f'Failed to stop odom capture: {detail}'
+            self.last_path_recording_message = message
+            print(message)
+            return False, message
+
+        self.path_recording_active = False
+        self.path_recording_id = response.path_id
+        self.last_path_recording_message = response.message
+        print(response.message)
+        return True, response.message
+
     def start_marker_seek(self):
         success, message = self._call_trigger_service(
             self.marker_seek_start_client, '/marker_seek/start')
@@ -308,6 +391,12 @@ class CombinedTeleopNode(Node):
         elif k == 'f':
             self.start_marker_seek()
             self.record_action(marker_action='start')
+            return True
+        elif k == 'r':
+            self.start_path_recording()
+            return True
+        elif k == 'b':
+            self.stop_path_recording()
             return True
         elif k == 'q' or key == '\x03':
             return False

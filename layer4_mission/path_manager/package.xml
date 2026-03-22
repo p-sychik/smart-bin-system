@@ -1,20 +1,18 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>turtlebot3_marker_seek_demo2</name>
+  <name>path_manager</name>
   <version>0.1.0</version>
-  <description>Marker seek demo using ArUco detection and autonomous approach for TurtleBot3</description>
-  <maintainer email="fola@email.com">Fola</maintainer>
+  <description>Odometry path recording and execution for bin collection missions</description>
+  <maintainer email="s2552017@ed.ac.uk">Codex</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
-  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>bin_collection_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

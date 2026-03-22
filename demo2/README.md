@@ -137,6 +137,11 @@ ros2 service list | grep marker_seek
 
 - `image_topic`: `/camera/image_raw`
 - `camera_info_topic`: `/camera_info`
+- `rear_image_topic`: `/rear_camera/image_raw`
+- `rear_camera_info_topic`: `/rear_camera/camera_info`
+- `pickup_camera_name`: `front`
+- `dropoff_camera_name`: `rear`
+- `manual_use_rear_when_hooked`: `true`
 - `cmd_vel_topic`: `cmd_vel`
 - `aruco_dictionary`: `DICT_4X4_50`
 - `marker_size_m`: `0.10`
@@ -152,5 +157,7 @@ Override example (run node directly):
 ```bash
 ros2 run turtlebot3_marker_seek_demo2 marker_seek_node --ros-args \
   -p cmd_vel_topic:=/cmd_vel \
-  -p marker_size_m:=0.12
+  -p marker_size_m:=0.12 \
+  -p rear_image_topic:=/rear_cam/image_raw \
+  -p rear_camera_info_topic:=/rear_cam/camera_info
 ```

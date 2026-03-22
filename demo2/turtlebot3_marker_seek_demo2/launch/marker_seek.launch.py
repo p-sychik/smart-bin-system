@@ -10,6 +10,12 @@ def generate_launch_description():
             name='marker_seek_node',
             output='screen',
             parameters=[{
+                'rear_image_topic': '/rear_camera/image_raw',
+                'rear_camera_info_topic': '/rear_camera/camera_info',
+                'pickup_camera_name': 'front',
+                'dropoff_camera_name': 'rear',
+                'manual_camera_name': 'front',
+                'manual_use_rear_when_hooked': True,
                 # Tuned to avoid left/right dithering and keep advancing.
                 'spin_speed_rad_s': 0.18,
                 'approach_turn_cap_rad_s': 0.12,
