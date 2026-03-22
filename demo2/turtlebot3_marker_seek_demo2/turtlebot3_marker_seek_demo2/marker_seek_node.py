@@ -721,10 +721,13 @@ class MarkerSeekNode(Node):
 
     def _handle_stop(self, request, response):
         del request
+        was_active = self.core.state != SeekState.IDLE
         success, message = self.core.stop(now_s=time.monotonic())
         response.success = success
         response.message = message
         self._publish_cmd(0.0, 0.0)
+        if success and was_active:
+            self._publish_event('STOPPED')
         self.get_logger().info('Marker seek stopped.')
         return response
 
@@ -904,6 +907,12 @@ class MarkerSeekNode(Node):
         if self.core.state == SeekState.SUCCEEDED:
             self.get_logger().info('Marker seek SUCCEEDED.')
             self._publish_event('SUCCEEDED')
+            self._publish_cmd(0.0, 0.0)
+            self.core.stop(now_s=now_s)
+            self._last_state = self.core.state
+        elif self.core.state == SeekState.FAILED:
+            self.get_logger().warn('Marker seek FAILED.')
+            self._publish_event('FAILED')
             self._publish_cmd(0.0, 0.0)
             self.core.stop(now_s=now_s)
             self._last_state = self.core.state

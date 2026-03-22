@@ -21,10 +21,6 @@ class CombinedTeleopUI:
         self.recording_var = tk.StringVar()
         self.marker_var = tk.StringVar()
         self.record_count_var = tk.StringVar()
-        self.path_recording_var = tk.StringVar()
-        self.path_message_var = tk.StringVar()
-        self.path_id_var = tk.StringVar()
-        self.path_desc_var = tk.StringVar()
 
         self._build_layout()
         self._update_status()
@@ -74,8 +70,8 @@ class CombinedTeleopUI:
                          row=3, col=0, colspan=2)
 
         self._add_section_label(controls, 'Servos', row=4)
-        self._add_button(controls, 'Center (C)', 'c', row=5, col=0)
-        self._add_button(controls, 'V Position (V)', 'v', row=5, col=1)
+        self._add_button(controls, 'Unhook (C)', 'c', row=5, col=0)
+        self._add_button(controls, 'Hook (V)', 'v', row=5, col=1)
 
         self._add_section_label(controls, 'Recording', row=6)
         self._add_button(controls, 'Start Recording (O)', 'o', row=7, col=0)
@@ -86,26 +82,6 @@ class CombinedTeleopUI:
         self._add_section_label(controls, 'Marker Seek', row=9)
         self._add_button(controls, 'Start Seek (F)', 'f', row=10, col=0)
         self._add_button(controls, 'Quit (Q)', 'q', row=10, col=1)
-
-        self._add_section_label(controls, 'Odom Path Capture', row=11)
-        ttk.Label(controls, text='Path ID').grid(
-            row=12, column=0, sticky='w', padx=4, pady=(2, 0))
-        ttk.Label(controls, text='Description').grid(
-            row=12, column=1, sticky='w', padx=4, pady=(2, 0))
-        ttk.Entry(controls, textvariable=self.path_id_var).grid(
-            row=13, column=0, sticky='ew', padx=4, pady=4)
-        ttk.Entry(controls, textvariable=self.path_desc_var).grid(
-            row=13, column=1, sticky='ew', padx=4, pady=4)
-        ttk.Button(
-            controls,
-            text='Start Path (R)',
-            command=self._start_path_capture_from_form,
-        ).grid(row=14, column=0, sticky='ew', padx=4, pady=4)
-        ttk.Button(
-            controls,
-            text='Stop Path (B)',
-            command=self._stop_path_capture,
-        ).grid(row=14, column=1, sticky='ew', padx=4, pady=4)
 
         usage_text = tk.Text(
             usage,
@@ -144,16 +120,6 @@ class CombinedTeleopUI:
         ttk.Label(status, textvariable=self.marker_var).grid(
             row=4, column=1, sticky='w', pady=4)
 
-        ttk.Label(status, text='Path Capture:').grid(
-            row=5, column=0, sticky='w', padx=8, pady=4)
-        ttk.Label(status, textvariable=self.path_recording_var).grid(
-            row=5, column=1, sticky='w', pady=4)
-
-        ttk.Label(status, text='Path Status:').grid(
-            row=6, column=0, sticky='w', padx=8, pady=4)
-        ttk.Label(status, textvariable=self.path_message_var).grid(
-            row=6, column=1, sticky='w', pady=4)
-
     def _add_section_label(self, parent, title, row):
         label = ttk.Label(parent, text=title, font=('TkDefaultFont', 11, 'bold'))
         label.grid(row=row, column=0, columnspan=2, sticky='w',
@@ -172,22 +138,9 @@ class CombinedTeleopUI:
         else:
             return
 
-        allowed = {'w', 'a', 's', 'd', 'x', 'c', 'v', 'o', 'p', 'f', 't', 'q', 'r', 'b'}
+        allowed = {'w', 'a', 's', 'd', 'x', 'c', 'v', 'o', 'p', 'f', 't', 'q'}
         if key.lower() in allowed or key == ' ':
             self._dispatch_key(key)
-
-    def _start_path_capture_from_form(self):
-        success, _ = self.node.start_path_recording(
-            path_id=self.path_id_var.get(),
-            description=self.path_desc_var.get(),
-        )
-        if success:
-            self.path_id_var.set(self.node.path_recording_id)
-        self._update_status()
-
-    def _stop_path_capture(self):
-        self.node.stop_path_recording()
-        self._update_status()
 
     def _dispatch_key(self, key):
         keep_running = self.node.handle_key(key)
@@ -205,12 +158,13 @@ class CombinedTeleopUI:
         )
         self.recording_var.set('ON' if self.node.recording else 'OFF')
         self.record_count_var.set(str(len(self.node.recorded_actions)))
-        self.marker_var.set('RUNNING' if self.node.marker_seek_running else 'IDLE')
-        if self.node.path_recording_active:
-            self.path_recording_var.set(f'ON ({self.node.path_recording_id})')
+        if self.node.marker_seek_running:
+            marker_status = 'RUNNING'
+        elif self.node.last_marker_seek_event not in {'', 'IDLE'}:
+            marker_status = f'IDLE (last {self.node.last_marker_seek_event})'
         else:
-            self.path_recording_var.set(self.node.path_recording_id or 'OFF')
-        self.path_message_var.set(self.node.last_path_recording_message)
+            marker_status = 'IDLE'
+        self.marker_var.set(marker_status)
 
     def _tick(self):
         if self._closing:

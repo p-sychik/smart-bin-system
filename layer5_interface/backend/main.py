@@ -32,16 +32,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-
-async def trigger_scheduled_mission(bin_id: str, sched_id: str, db: AsyncSession):
-    """Placeholder scheduler hook until backend-to-ROS dispatch is added."""
-    del db
-    logger.warning(
-        "Schedule %s triggered for bin %s, but ROS mission dispatch is not configured in the backend yet.",
-        sched_id,
-        bin_id,
-    )
-
 # Startup events
 @app.on_event("startup")
 async def startup_event():
@@ -84,7 +74,6 @@ async def create_bin(bin_data: BinCreate, db: AsyncSession = Depends(get_session
         location_name=bin_data.location_name,
         path_to_bin_id=bin_data.path_to_bin_id,
         path_to_collection_id=bin_data.path_to_collection_id,
-        pickup_marker_id=bin_data.pickup_marker_id,
         home_pose_x=bin_data.home_pose_x,
         home_pose_y=bin_data.home_pose_y,
         home_pose_z=bin_data.home_pose_z,

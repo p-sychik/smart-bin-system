@@ -10,7 +10,6 @@ class BinCreate(BaseModel):
     location_name: str = Field(..., description="Human-readable location")
     path_to_bin_id: str = Field(..., description="Path ID to reach bin")
     path_to_collection_id: str = Field(..., description="Path ID from bin to collection")
-    pickup_marker_id: int = Field(..., description="Unique ArUco marker ID on the bin")
     home_pose_x: float = 0.0
     home_pose_y: float = 0.0
     home_pose_z: float = 0.0
@@ -26,7 +25,6 @@ class BinUpdate(BaseModel):
     location_name: Optional[str] = None
     path_to_bin_id: Optional[str] = None
     path_to_collection_id: Optional[str] = None
-    pickup_marker_id: Optional[int] = None
     home_pose_x: Optional[float] = None
     home_pose_y: Optional[float] = None
     home_pose_z: Optional[float] = None
@@ -45,7 +43,6 @@ class BinResponse(BaseModel):
     location_name: str
     path_to_bin_id: str
     path_to_collection_id: str
-    pickup_marker_id: int
     home_pose_x: float
     home_pose_y: float
     home_pose_z: float
