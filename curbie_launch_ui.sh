@@ -1,8 +1,15 @@
 #!/bin/bash
 
 # ===== CONFIG =====
-WORKSPACE=~/smart_bin_system   # change to your workspace root
+WORKSPACE="${WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 SESSION="marker_system"
+
+cd "$WORKSPACE" || exit 1
+
+# shellcheck disable=SC1090
+if [[ -f "$HOME/.bashrc" ]]; then
+  source "$HOME/.bashrc"
+fi
 
 source install/setup.bash
 
@@ -16,6 +23,7 @@ tmux new-session -d -s $SESSION
 tmux send-keys -t $SESSION "
 cd $WORKSPACE
 source /opt/ros/jazzy/setup.bash
+source ~/.bashrc
 colcon build --packages-select turtlebot3_marker_seek_demo2
 source install/setup.bash
 ros2 launch turtlebot3_marker_seek_demo2 marker_seek.launch.py
@@ -26,6 +34,7 @@ tmux split-window -h -t $SESSION
 tmux send-keys -t $SESSION "
 cd $WORKSPACE
 source /opt/ros/jazzy/setup.bash
+source ~/.bashrc
 colcon build --packages-select turtlebot3_combined_teleop
 source install/setup.bash
 ros2 run turtlebot3_combined_teleop combined_teleop_ui_node
@@ -35,6 +44,7 @@ ros2 run turtlebot3_combined_teleop combined_teleop_ui_node
 tmux split-window -v -t $SESSION:0.1
 tmux send-keys -t $SESSION "
 source /opt/ros/jazzy/setup.bash
+source ~/.bashrc
 ros2 run rqt_image_view rqt_image_view /camera/image_raw
 " C-m
 

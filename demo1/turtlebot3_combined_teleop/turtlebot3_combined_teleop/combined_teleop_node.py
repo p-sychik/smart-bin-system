@@ -6,9 +6,15 @@ import time
 import tty
 from typing import Optional
 
+import cv2
+import numpy as np
 from bin_collection_msgs.msg import HookStatus
+from bin_collection_msgs.msg import MissionStatus
 from bin_collection_msgs.srv import DisengageHook
 from bin_collection_msgs.srv import EngageHook
+from bin_collection_msgs.srv import StartMission
+from bin_collection_msgs.srv import StartRecording
+from bin_collection_msgs.srv import StopRecording
 import rclpy
 from rclpy.clock import Clock
 from rclpy.node import Node
@@ -16,12 +22,14 @@ from rclpy.qos import QoSProfile
 
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Image
 from std_msgs.msg import Float32MultiArray, String
 from std_srvs.srv import Trigger
 from turtlebot3_combined_teleop.recording_playback_core import Pose2D
 from turtlebot3_combined_teleop.recording_playback_core import absolute_pose
 from turtlebot3_combined_teleop.recording_playback_core import compute_waypoint_command
 from turtlebot3_combined_teleop.recording_playback_core import relative_pose
+from rclpy.qos import qos_profile_sensor_data
 
 ODOM_TOPIC = 'odom'
 PLAYBACK_CONTROL_RATE_HZ = 20.0
@@ -33,6 +41,9 @@ HOOK_UNLOCKED_POS = (0.0, 0.0)
 HOOK_LOCKED_POS = (0.5, -0.5)
 PLAYBACK_POSITION_TOLERANCE_M = 0.12
 PLAYBACK_YAW_TOLERANCE_RAD = 0.20
+SERVICE_WAIT_TIMEOUT_S = 0.20
+SERVICE_CALL_TIMEOUT_S = 3.0
+CAMERA_PREVIEW_SIZE = (320, 240)
 
 USAGE_MSG = """
 Combined TurtleBot3 Teleop
@@ -140,12 +151,56 @@ class CombinedTeleopNode(Node):
             DisengageHook,
             '/hook/disengage',
         )
+        self.path_start_recording_client = self.create_client(
+            StartRecording,
+            '/path_manager/start_recording',
+        )
+        self.path_stop_recording_client = self.create_client(
+            StopRecording,
+            '/path_manager/stop_recording',
+        )
+        self.mission_start_client = self.create_client(
+            StartMission,
+            '/mission/start',
+        )
+        self.mission_status_sub = self.create_subscription(
+            MissionStatus,
+            '/mission/status',
+            self._mission_status_callback,
+            10,
+        )
         self.current_pose: Optional[Pose2D] = None
         self._recording_anchor_pose: Optional[Pose2D] = None
         self._replay_anchor_pose: Optional[Pose2D] = None
         self.hook_attached: Optional[bool] = None
         self.hook_state = 'UNKNOWN'
         self._hook_status_update_count = 0
+        self.front_camera_preview_ppm: Optional[bytes] = None
+        self.rear_camera_preview_ppm: Optional[bytes] = None
+        self.front_camera_preview_seq = 0
+        self.rear_camera_preview_seq = 0
+        self.front_camera_status = 'Waiting for /camera/image_raw'
+        self.rear_camera_status = 'Waiting for /rear_camera/image_raw'
+        self.front_camera_sub = self.create_subscription(
+            Image,
+            '/camera/image_raw',
+            self._front_camera_callback,
+            qos_profile_sensor_data,
+        )
+        self.rear_camera_sub = self.create_subscription(
+            Image,
+            '/rear_camera/image_raw',
+            self._rear_camera_callback,
+            qos_profile_sensor_data,
+        )
+        self.latest_mission_status = {
+            'mission_id': '',
+            'bin_id': '',
+            'state': 'IDLE',
+            'current_action': '',
+            'progress_percent': 0.0,
+            'error_message': '',
+        }
 
     def publish_cmd_vel(self):
         msg = TwistStamped()
@@ -203,6 +258,124 @@ class CombinedTeleopNode(Node):
         self.hook_attached = bool(msg.bin_attached)
         self.hook_state = msg.state or 'UNKNOWN'
         self._hook_status_update_count += 1
+
+    def _mission_status_callback(self, msg):
+        self.latest_mission_status = {
+            'mission_id': msg.mission_id,
+            'bin_id': msg.bin_id,
+            'state': msg.state,
+            'current_action': msg.current_action,
+            'progress_percent': float(msg.progress_percent),
+            'error_message': msg.error_message,
+        }
+
+    def _front_camera_callback(self, msg):
+        self._update_camera_preview('front', msg)
+
+    def _rear_camera_callback(self, msg):
+        self._update_camera_preview('rear', msg)
+
+    def _update_camera_preview(self, camera_name, msg):
+        try:
+            rgb_image = self._decode_image_message(msg)
+            preview = self._fit_camera_preview(rgb_image, *CAMERA_PREVIEW_SIZE)
+            preview_ppm = self._ppm_from_rgb_image(preview)
+            status = (
+                f'{msg.width}x{msg.height} {msg.encoding} on '
+                f'/{camera_name}_camera/image_raw'
+                if camera_name == 'rear'
+                else f'{msg.width}x{msg.height} {msg.encoding} on /camera/image_raw'
+            )
+        except Exception as exc:
+            preview_ppm = None
+            status = (
+                f'Preview error on /rear_camera/image_raw: {exc}'
+                if camera_name == 'rear'
+                else f'Preview error on /camera/image_raw: {exc}'
+            )
+
+        if camera_name == 'front':
+            self.front_camera_preview_ppm = preview_ppm
+            self.front_camera_status = status
+            self.front_camera_preview_seq += 1
+        else:
+            self.rear_camera_preview_ppm = preview_ppm
+            self.rear_camera_status = status
+            self.rear_camera_preview_seq += 1
+
+    def _decode_image_message(self, msg):
+        encoding = (msg.encoding or '').strip().lower()
+        raw = np.frombuffer(msg.data, dtype=np.uint8)
+        rows = raw.reshape((msg.height, msg.step))
+
+        if encoding in {'mono8', '8uc1'}:
+            mono = rows[:, :msg.width]
+            return np.repeat(mono[:, :, None], 3, axis=2)
+
+        if encoding in {'rgb8', '8uc3'}:
+            return rows[:, :msg.width * 3].reshape((msg.height, msg.width, 3))
+
+        if encoding == 'bgr8':
+            bgr = rows[:, :msg.width * 3].reshape((msg.height, msg.width, 3))
+            return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+        if encoding in {'rgba8', '8uc4'}:
+            rgba = rows[:, :msg.width * 4].reshape((msg.height, msg.width, 4))
+            return cv2.cvtColor(rgba, cv2.COLOR_RGBA2RGB)
+
+        if encoding == 'bgra8':
+            bgra = rows[:, :msg.width * 4].reshape((msg.height, msg.width, 4))
+            return cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGB)
+
+        if encoding in {'yuyv', 'yuy2', 'yuv422', 'yuv422_yuy2'}:
+            yuyv = rows[:, :msg.width * 2].reshape((msg.height, msg.width, 2))
+            return cv2.cvtColor(yuyv, cv2.COLOR_YUV2RGB_YUY2)
+
+        raise ValueError(f'Unsupported encoding: {msg.encoding}')
+
+    def _fit_camera_preview(self, rgb_image, target_width, target_height):
+        src_height, src_width = rgb_image.shape[:2]
+        if src_width <= 0 or src_height <= 0:
+            raise ValueError('empty frame')
+
+        scale = min(target_width / src_width, target_height / src_height)
+        resized_width = max(1, int(round(src_width * scale)))
+        resized_height = max(1, int(round(src_height * scale)))
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        resized = cv2.resize(
+            rgb_image,
+            (resized_width, resized_height),
+            interpolation=interpolation,
+        )
+
+        canvas = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+        y_offset = (target_height - resized_height) // 2
+        x_offset = (target_width - resized_width) // 2
+        canvas[
+            y_offset:y_offset + resized_height,
+            x_offset:x_offset + resized_width,
+        ] = resized
+        return canvas
+
+    def _ppm_from_rgb_image(self, rgb_image):
+        height, width = rgb_image.shape[:2]
+        header = f'P6\n{width} {height}\n255\n'.encode('ascii')
+        return header + rgb_image.tobytes()
+
+    def get_camera_preview(self, camera_name):
+        if camera_name == 'front':
+            return {
+                'ppm': self.front_camera_preview_ppm,
+                'seq': self.front_camera_preview_seq,
+                'status': self.front_camera_status,
+            }
+        if camera_name == 'rear':
+            return {
+                'ppm': self.rear_camera_preview_ppm,
+                'seq': self.rear_camera_preview_seq,
+                'status': self.rear_camera_status,
+            }
+        raise ValueError(f'Unknown camera name: {camera_name}')
 
     def _normalize_recorded_action(self, action):
         if len(action) == 5:
@@ -474,13 +647,17 @@ class CombinedTeleopNode(Node):
         return abs(linear_x) > 1e-4 or abs(angular_z) > 1e-4
 
     def _call_trigger_service(self, client, service_name):
-        if not client.wait_for_service(timeout_sec=0.20):
+        if not client.wait_for_service(timeout_sec=SERVICE_WAIT_TIMEOUT_S):
             print(f'{service_name} unavailable.')
             return False, 'service unavailable'
 
         request = Trigger.Request()
         future = client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        rclpy.spin_until_future_complete(
+            self,
+            future,
+            timeout_sec=SERVICE_CALL_TIMEOUT_S,
+        )
 
         if not future.done():
             print(f'{service_name} call timed out.')
@@ -494,7 +671,7 @@ class CombinedTeleopNode(Node):
         return bool(response.success), response.message
 
     def _call_hook_service(self, client, service_name):
-        if not client.wait_for_service(timeout_sec=0.20):
+        if not client.wait_for_service(timeout_sec=SERVICE_WAIT_TIMEOUT_S):
             print(f'{service_name} unavailable.')
             return False, 'service unavailable', None
 
@@ -503,7 +680,11 @@ class CombinedTeleopNode(Node):
         else:
             request = DisengageHook.Request()
         future = client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        rclpy.spin_until_future_complete(
+            self,
+            future,
+            timeout_sec=SERVICE_CALL_TIMEOUT_S,
+        )
 
         if not future.done():
             print(f'{service_name} call timed out.')
@@ -515,6 +696,110 @@ class CombinedTeleopNode(Node):
             return False, 'no response', None
 
         return bool(response.success), response.message, response.status
+
+    def start_path_recording(self, path_id, description=''):
+        path_id = path_id.strip()
+        if not path_id:
+            return False, 'Path ID is required.'
+
+        if not self.path_start_recording_client.wait_for_service(
+            timeout_sec=SERVICE_WAIT_TIMEOUT_S,
+        ):
+            return False, '/path_manager/start_recording unavailable.'
+
+        request = StartRecording.Request()
+        request.path_id = path_id
+        request.description = description.strip()
+        future = self.path_start_recording_client.call_async(request)
+        rclpy.spin_until_future_complete(
+            self,
+            future,
+            timeout_sec=SERVICE_CALL_TIMEOUT_S,
+        )
+
+        if not future.done():
+            return False, 'Timed out waiting for /path_manager/start_recording.'
+
+        response = future.result()
+        if response is None:
+            return False, 'No response from /path_manager/start_recording.'
+
+        return bool(response.success), response.message
+
+    def stop_path_recording(self):
+        if not self.path_stop_recording_client.wait_for_service(
+            timeout_sec=SERVICE_WAIT_TIMEOUT_S,
+        ):
+            return {
+                'success': False,
+                'message': '/path_manager/stop_recording unavailable.',
+                'path_id': '',
+                'num_points': 0,
+                'total_distance': 0.0,
+            }
+
+        request = StopRecording.Request()
+        future = self.path_stop_recording_client.call_async(request)
+        rclpy.spin_until_future_complete(
+            self,
+            future,
+            timeout_sec=SERVICE_CALL_TIMEOUT_S,
+        )
+
+        if not future.done():
+            return {
+                'success': False,
+                'message': 'Timed out waiting for /path_manager/stop_recording.',
+                'path_id': '',
+                'num_points': 0,
+                'total_distance': 0.0,
+            }
+
+        response = future.result()
+        if response is None:
+            return {
+                'success': False,
+                'message': 'No response from /path_manager/stop_recording.',
+                'path_id': '',
+                'num_points': 0,
+                'total_distance': 0.0,
+            }
+
+        return {
+            'success': bool(response.success),
+            'message': response.message,
+            'path_id': response.path_id,
+            'num_points': int(response.num_points),
+            'total_distance': float(response.total_distance),
+        }
+
+    def queue_mission(self, bin_id):
+        bin_id = bin_id.strip()
+        if not bin_id:
+            return False, '', 'Bin ID is required.'
+
+        if not self.mission_start_client.wait_for_service(
+            timeout_sec=SERVICE_WAIT_TIMEOUT_S,
+        ):
+            return False, '', '/mission/start unavailable.'
+
+        request = StartMission.Request()
+        request.bin_id = bin_id
+        future = self.mission_start_client.call_async(request)
+        rclpy.spin_until_future_complete(
+            self,
+            future,
+            timeout_sec=SERVICE_CALL_TIMEOUT_S,
+        )
+
+        if not future.done():
+            return False, '', 'Timed out waiting for /mission/start.'
+
+        response = future.result()
+        if response is None:
+            return False, '', 'No response from /mission/start.'
+
+        return bool(response.accepted), response.mission_id, response.message
 
     def _wait_for_hook_status_update(
         self,

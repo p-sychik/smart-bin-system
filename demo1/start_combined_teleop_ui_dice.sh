@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Avoid unbound-variable failure under `set -u` when sourcing ROS setup.
 export AMENT_TRACE_SETUP_FILES="${AMENT_TRACE_SETUP_FILES-}"
+export AMENT_PYTHON_EXECUTABLE="${AMENT_PYTHON_EXECUTABLE-$(command -v python3)}"
+
+# shellcheck disable=SC1090
+if [[ -f "${HOME}/.bashrc" ]]; then
+  source "${HOME}/.bashrc"
+fi
 
 # shellcheck disable=SC1091
 source /opt/ros/jazzy/setup.bash
