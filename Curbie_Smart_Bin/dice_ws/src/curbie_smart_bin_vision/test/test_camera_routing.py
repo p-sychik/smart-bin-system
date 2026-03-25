@@ -5,6 +5,7 @@ import pytest
 from curbie_smart_bin_vision.camera_routing import active_camera_name
 from curbie_smart_bin_vision.camera_routing import camera_for_align_mode
 from curbie_smart_bin_vision.camera_routing import camera_for_manual_seek
+from curbie_smart_bin_vision.camera_routing import marker_x_sign_for_camera
 from curbie_smart_bin_vision.camera_routing import normalize_camera_name
 
 
@@ -73,3 +74,9 @@ def test_active_camera_prefers_align_override_over_manual_seek():
         hook_attached=False,
         use_rear_camera_when_hooked=True,
     ) is None
+
+
+def test_marker_x_sign_can_differ_between_front_and_rear_cameras():
+    assert marker_x_sign_for_camera('front', 1.0, -1.0) == 1.0
+    assert marker_x_sign_for_camera('rear', 1.0, -1.0) == -1.0
+    assert marker_x_sign_for_camera('front', 0.0, -1.0) == -1.0

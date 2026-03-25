@@ -32,6 +32,7 @@ from curbie_smart_bin_vision.align_to_marker_core import AlignToMarkerCore
 from curbie_smart_bin_vision.align_to_marker_core import select_target_measurement
 from curbie_smart_bin_vision.camera_routing import active_camera_name
 from curbie_smart_bin_vision.camera_routing import camera_for_align_mode
+from curbie_smart_bin_vision.camera_routing import marker_x_sign_for_camera
 from curbie_smart_bin_vision.camera_routing import normalize_camera_name
 from curbie_smart_bin_vision.marker_seek_core import MarkerSeekCore
 from curbie_smart_bin_vision.marker_seek_core import SeekState
@@ -115,6 +116,8 @@ class MarkerSeekNode(Node):
         self.declare_parameter('yaw_filter_alpha', 0.30)
         self.declare_parameter('yaw_deadband_rad', 0.05)
         self.declare_parameter('marker_x_sign', -1.0)
+        self.declare_parameter('front_marker_x_sign', 1.0)
+        self.declare_parameter('rear_marker_x_sign', -1.0)
         self.declare_parameter('measurement_retain_s', 3.0)
         self.declare_parameter('autostart', False)
         self.declare_parameter('obstacle_avoidance_enabled', False)
@@ -150,6 +153,12 @@ class MarkerSeekNode(Node):
         self.yaw_filter_alpha = float(self.get_parameter('yaw_filter_alpha').value)
         self.yaw_deadband_rad = float(self.get_parameter('yaw_deadband_rad').value)
         self.marker_x_sign = float(self.get_parameter('marker_x_sign').value)
+        self.front_marker_x_sign = float(
+            self.get_parameter('front_marker_x_sign').value
+        )
+        self.rear_marker_x_sign = float(
+            self.get_parameter('rear_marker_x_sign').value
+        )
         self.measurement_retain_s = max(
             0.2,
             float(self.get_parameter('measurement_retain_s').value),
@@ -247,6 +256,16 @@ class MarkerSeekNode(Node):
         if abs(self.marker_x_sign) < 1e-6:
             self.get_logger().warn('marker_x_sign cannot be 0.0; using -1.0.')
             self.marker_x_sign = -1.0
+        if abs(self.front_marker_x_sign) < 1e-6:
+            self.get_logger().warn(
+                'front_marker_x_sign cannot be 0.0; using legacy marker_x_sign.'
+            )
+            self.front_marker_x_sign = self.marker_x_sign
+        if abs(self.rear_marker_x_sign) < 1e-6:
+            self.get_logger().warn(
+                'rear_marker_x_sign cannot be 0.0; using legacy marker_x_sign.'
+            )
+            self.rear_marker_x_sign = self.marker_x_sign
         self.measurement_retain_s = max(
             self.measurement_retain_s,
             float(self.get_parameter('lost_marker_timeout_s').value) + 0.2,
@@ -550,12 +569,20 @@ class MarkerSeekNode(Node):
             rvecs, tvecs = result
         return rvecs, tvecs
 
-    def _estimate_marker_yaw(self, rvec: np.ndarray) -> float:
+    def _marker_x_sign_for_camera(self, camera_name: str) -> float:
+        return marker_x_sign_for_camera(
+            camera_name,
+            front_marker_x_sign=self.front_marker_x_sign,
+            rear_marker_x_sign=self.rear_marker_x_sign,
+        )
+
+    def _estimate_marker_yaw(self, rvec: np.ndarray, *, camera_name: str) -> float:
         rotation_matrix, _ = cv2.Rodrigues(
             np.ascontiguousarray(np.array(rvec, dtype=np.float64).reshape((3, 1)))
         )
         normal = rotation_matrix[:, 2]
-        return float(self.marker_x_sign * math.atan2(float(normal[0]), float(normal[2])))
+        x_sign = self._marker_x_sign_for_camera(camera_name)
+        return float(x_sign * math.atan2(float(normal[0]), float(normal[2])))
 
     def _image_to_gray(self, msg: Image) -> Optional[np.ndarray]:
         width = int(msg.width)
@@ -657,6 +684,7 @@ class MarkerSeekNode(Node):
         nearest_manual: Optional[AlignMeasurement] = None
         ids_flat = np.array(ids, dtype=np.int32).reshape(-1)
         rvecs, tvecs = pose_result
+        x_sign = self._marker_x_sign_for_camera(camera_name)
         for index, marker_id in enumerate(ids_flat):
             vec = np.array(tvecs[index], dtype=np.float64).reshape(-1)
             if vec.size < 3:
@@ -664,8 +692,11 @@ class MarkerSeekNode(Node):
             z_m = float(vec[2])
             if z_m <= 0.0:
                 continue
-            x_m = float(self.marker_x_sign * vec[0])
-            marker_yaw = self._estimate_marker_yaw(rvecs[index])
+            x_m = float(x_sign * vec[0])
+            marker_yaw = self._estimate_marker_yaw(
+                rvecs[index],
+                camera_name=camera_name,
+            )
             if index < len(corners):
                 yaw_from_pixel = self._compute_yaw_from_marker_center(
                     corners[index],
@@ -682,7 +713,7 @@ class MarkerSeekNode(Node):
                     if abs(filtered) < self.yaw_deadband_rad:
                         filtered = 0.0
                     stream.filtered_yaw_rad = filtered
-                    x_m = z_m * math.tan(self.marker_x_sign * filtered)
+                    x_m = z_m * math.tan(x_sign * filtered)
             observation = AlignMeasurement(
                 marker_id=int(marker_id),
                 x_m=x_m,

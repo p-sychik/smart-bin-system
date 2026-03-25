@@ -62,3 +62,16 @@ def active_camera_name(
             use_rear_camera_when_hooked=use_rear_camera_when_hooked,
         )
     return None
+
+
+def marker_x_sign_for_camera(
+    camera_name: str,
+    front_marker_x_sign: float,
+    rear_marker_x_sign: float,
+) -> float:
+    """Return the lateral sign correction for the selected camera."""
+    normalized_name = normalize_camera_name(camera_name, default='front')
+    sign = front_marker_x_sign if normalized_name == 'front' else rear_marker_x_sign
+    if abs(sign) < 1e-6:
+        return -1.0
+    return 1.0 if sign > 0.0 else -1.0

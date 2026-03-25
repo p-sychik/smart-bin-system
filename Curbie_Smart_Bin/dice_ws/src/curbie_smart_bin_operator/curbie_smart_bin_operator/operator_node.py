@@ -392,6 +392,7 @@ class OperatorNode(Node):
         start_pose = self.current_pose
         sleep_s = 1.0 / self.replay_control_rate_hz
         speed_cap = min(0.08, max(0.04, self.manual_linear_speed_m_s))
+        completion_tolerance_m = min(0.005, max(0.003, distance_m * 0.12))
         timeout_s = max(4.0, distance_m / max(0.01, speed_cap) * 4.0)
         started_s = time.monotonic()
 
@@ -407,7 +408,7 @@ class OperatorNode(Node):
             relative = pose_relative(start_pose, self.current_pose)
             distance_traveled_m = math.hypot(relative.x, relative.y)
             remaining_m = distance_m - distance_traveled_m
-            if remaining_m <= 0.01:
+            if remaining_m <= completion_tolerance_m:
                 self.stop_motion(immediate=True)
                 return True, (
                     f'Moved about {min(distance_traveled_m, distance_m):.2f} m '
