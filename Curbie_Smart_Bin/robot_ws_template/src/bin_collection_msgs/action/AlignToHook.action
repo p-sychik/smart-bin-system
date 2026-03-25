@@ -1,0 +1,10 @@
+# Goal
+float32 timeout_secs
+---
+# Result
+bool success
+string message
+---
+# Feedback
+bin_collection_msgs/AlignmentStatus alignment
+string phase

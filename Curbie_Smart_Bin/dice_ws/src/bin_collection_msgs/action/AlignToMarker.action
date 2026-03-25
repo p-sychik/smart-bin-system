@@ -1,0 +1,15 @@
+# Goal
+int32 target_marker_id
+string mode
+float32 stand_off_m
+float32 lateral_offset_m
+float32 yaw_offset_rad
+float32 timeout_s
+---
+# Result
+bool success
+string message
+---
+# Feedback
+bin_collection_msgs/AlignmentStatus alignment
+string phase

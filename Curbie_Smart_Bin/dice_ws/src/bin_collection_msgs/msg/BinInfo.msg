@@ -1,0 +1,10 @@
+string bin_id
+string rfid_tag_id
+string bin_type
+string location_name
+string path_to_bin_id
+string path_to_collection_id
+string path_to_home_id
+int32 pickup_marker_id
+geometry_msgs/Pose home_pose
+builtin_interfaces/Time last_collected

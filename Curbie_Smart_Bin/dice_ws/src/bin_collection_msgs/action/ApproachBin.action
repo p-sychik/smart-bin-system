@@ -1,0 +1,11 @@
+# Goal
+string bin_id
+---
+# Result
+bool success
+string message
+bin_collection_msgs/BinInfo bin_info
+---
+# Feedback
+string phase
+float32 progress_percent

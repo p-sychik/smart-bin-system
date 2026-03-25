@@ -1,0 +1,6 @@
+---
+bool success
+string path_id
+uint32 num_points
+float32 total_distance
+string message

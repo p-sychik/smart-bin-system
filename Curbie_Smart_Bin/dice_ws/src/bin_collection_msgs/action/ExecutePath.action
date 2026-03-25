@@ -1,0 +1,12 @@
+# Goal
+string path_id
+bool reverse
+float32 max_speed
+---
+# Result
+bool success
+string message
+float32 duration_secs
+---
+# Feedback
+bin_collection_msgs/PathStatus status
